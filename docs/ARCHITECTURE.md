@@ -1,121 +1,80 @@
 # Project Architecture
 
-This document describes the internal architecture of the Elden Ring Nightreign Timer.
+This document describes the internal architecture of the Elden Ring Nightreign Timer (Phase 1 Refactoring).
 
 ## Overview
 
-The application is an **Event-Driven OCR Overlay** that captures the game screen, detects specific text triggers ("JOUR 1", "JOUR 2", "JOUR 3", "VICTORY"), and automatically manages a countdown timer displayed on top of the game.
+The application is an **Event-Driven OCR Overlay** utilizing a **Service-Oriented Architecture**. It captures the game screen, detects specific text triggers ("JOUR 1", "JOUR 2", "JOUR 3", "VICTORY"), and automatically manages a game timer.
 
-## Core Components
+## Core Services
 
-### 1. `App` (in `main.py`)
+The application has been refactored from a monolithic class into distinct services managed by a Dependency Injection container.
 
-The central controller that acts as the "glue" between components.
+### 1. `ServiceContainer` (in `src/service_container.py`)
 
-- **Responsibility**: Application lifecycle, UI setup, Service loop (Hibernation/Wake), Event Dispatching.
-- **Key Logic**:
-  - **Hibernation Loop**: Scans for `nightreign.exe` every 5 seconds. Pauses Vision/Overlay when game is closed.
-  - **State Machine**: Maintains the application state (Waiting -> Day 1 -> Boss 1 -> Day 2...).
-  - **Consensus Algorithm**: Buffers OCR results (`trigger_buffer`) and uses a weighted voting system to prevent false positives (e.g., requires multiple consistent detections).
+A singleton container that manages the lifecycle and dependency resolution of all services.
 
-### 2. `VisionEngine` (in `src/vision_engine.py`)
+### 2. `IConfigService` (in `src/services/config_service.py`)
 
-The "eyes" of the application. It runs on a separate thread.
+- **Responsibility**: Loads and saves `config.json`.
+- **Logic**: Provides typed access to configuration values and handles persistence.
 
-- **Responsibility**: Screen Capture, Image Preprocessing, OCR, Pattern Matching.
-- **Mechanism**:
-  - **Capture**: Uses `BetterCam` (DXGI) for low-latency capture or `WindowsGraphicsCapture` for HDR support.
-  - **Pipeline**: Capture -> Preprocess (Gamma/Threshold) -> Tesseract OCR -> Clean Text.
-  - **Optimization**: Uses a **2-Pass Strategy** (Dynamic Threshold first, Adaptive fallback) to handle varying lighting conditions (Day/Night cycles in game).
-  - **Fast Mode**: Increases scan frequency (20Hz) when potential triggers are detected to capture fleeting text.
+### 3. `IVisionService` (in `src/services/vision_service.py`)
 
-### 3. `Overlay` (in `src/overlay.py`)
+- **Responsibility**: Acts as a high-level wrapper around the `VisionEngine`.
+- **Logic**:
+  - Manages the background capture thread.
+  - Implements the **2-Pass OCR Strategy** (Dynamic Threshold -> Adaptive Fallback).
+  - Handles **Fast Mode** (20Hz scanning) when triggers are suspected.
+  - Notifies observers (StateService) when text is detected.
 
-The transparent UI window.
+### 4. `IOverlayService` (in `src/services/overlay_service.py`)
 
-- **Responsibility**: Rendering the timer and status text.
-- **Key Logic**:
-  - **Transparent Window**: Uses "Chroma Key" transparency (`#000001` color key).
-  - **Timer Logic**: Manages countdowns for specific phases (Storm, Shrinking).
-  - **Audio Feedback**: Beeps on critical timer events (10s remaining, etc.).
+- **Responsibility**: Manages the UI View (Tkinter).
+- **Logic**:
+  - Renders the transparent overlay window.
+  - Exposes methods like `update_timer(text)` and `show_recording(bool)`.
+  - Handles UI thread scheduling.
 
-### 4. `PatternManager` (in `src/pattern_manager.py`)
+### 5. `IStateService` (in `src/services/state_service.py`)
 
-(Implicitly used by App/Vision)
-
-- **Responsibility**: Fuzzy matching of OCR results against known patterns.
-- **Logic**: Handles common misreadings (e.g., "JOURIL" -> "JOUR II") via a correction map.
+- **Responsibility**: The "Brain" of the application.
+- **Logic**:
+  - **Game Loop**: Monitors `nightreign.exe` to wake/hibernate the app.
+  - **State Machine**: Tracks phases (Day 1 -> Storm -> Boss...).
+  - **Consensus Algorithm**: Buffers OCR signals to prevent false positives.
+  - **Logic**: Handles Boss 3 sequences (Black screen detection) and Victory checks.
 
 ## File Structure
 
 ```
 .
-├── main.py                     # Application Entry Point
-├── config.json                 # User Configuration (Region, Debug flags)
-├── requirements.txt            # Python dependencies
+├── main.py                     # Application Entry Point (Bootstrapper)
+├── config.json                 # User Configuration
+├── requirements.txt            # Dependencies
 ├── monitor.log                 # Service watchdog log
 ├── ocr_log.txt                 # Detailed OCR logs
-├── ocr_patterns.json           # Known OCR patterns database
-├── processes.txt               # Process list dump (for debugging)
-├── scripts/                    # Scripts for end-users
-│   ├── add_victory_region.py   # Helper to configure victory zone
-│   ├── open_config.bat         # Launch config UI
-│   └── start_background.bat    # Launch background service
-├── src/                        # Core Application Code
-│   ├── config.py               # Config loader/saver
-│   ├── overlay.py              # Tkinter transparent overlay
-│   ├── pattern_manager.py      # Fuzzy matching logic
-│   ├── region_selector.py      # UI for selecting screen region
-│   └── vision_engine.py        # Main OCR loop & Capture logic
-├── tools/                      # Development & Analysis Tools
-│   ├── analyze_best_params.py  # Analyze OCR tuning results
-│   ├── analyze_data.py         # General data analysis
-│   ├── analyze_images.py       # Image statistics
-│   ├── analyze_logs.py         # Log parser
-│   ├── analyze_region.py       # Region setting debugger
-│   ├── benchmark_pil.py        # Performance test
-│   ├── capture_samples.py      # Burst capture tool for training data
-│   ├── cleanup_raw_samples.py  # Disk space cleaner
-│   ├── debug_keys.py           # Keyboard hook debugger
-│   ├── debug_shlex.py          # Shell execution debugger
-│   ├── debug_vision_live.py    # Live vision debugger
-│   ├── diagnostic_capture.py   # Single shot diagnostic
-│   ├── label_samples.py        # Manual sample labeler
-│   ├── list_windows.py         # Window title lister
-│   ├── optimize_ocr.py         # Grid search for OCR params
-│   ├── optimize_stars.py       # Star rating optimizer (experimental)
-│   ├── probe_monitors.py       # Monitor topology probe
-│   ├── probe_virtual_screen.py # Virtual screen coordinates probe
-│   ├── tune_ocr.py             # Quick OCR tuner
-│   ├── tune_ocr_params.py      # Parameter tuner v2
-│   └── verify_dynamic_ocr.py   # Verify dynamic thresholding logic
-├── tests/                      # Unit & Regression Tests
-│   ├── test_capture_resultat.py# Test for victory screen capture
-│   ├── test_ocr_tuning.py      # Test OCR parameters
-│   ├── test_ocr_variants.py    # Comparison of OCR preprocessing
-│   ├── test_pattern_manager.py # Test pattern matching logic
-│   ├── test_patterns.json      # Test data
-│   ├── test_patterns_fr.json   # French test data
-│   ├── test_pil.py             # PIL functionality test
-│   ├── test_vision_fix.py      # Regression test for specific bug
-│   ├── test_wgc.py             # Windows Graphics Capture test
-│   ├── test_wgc_mon1.py        # WGC Monitor 1 specific test
-│   ├── verify_final.py         # Verify final build
-│   ├── verify_fix.py           # Verification script
-│   ├── verify_fuzzy.py         # Fuzzy logic verification
-│   ├── verify_multipass.py     # Multi-pass OCR verification
-│   └── verify_winner.py        # Winner integration verification
-└── docs/                       # Documentation
-    └── ARCHITECTURE.md         # This file
+├── ocr_patterns.json           # OCR fuzzy matching patterns
+├── src/                        # Source Code
+│   ├── service_container.py    # DI Container
+│   ├── pattern_manager.py      # Fuzzy Match Logic
+│   ├── region_selector.py      # UI Utility
+│   ├── vision_engine.py        # Core Computer Vision Implementation
+│   └── services/               # Service Layer
+│       ├── base_service.py     # Interfaces (Abstract Base Classes)
+│       ├── config_service.py   # Config Implementation
+│       ├── overlay_service.py  # UI Implementation
+│       ├── state_service.py    # Game Logic Implementation
+│       └── vision_service.py   # Vision Wrapper
+├── tests/                      # Tests
+└── tools/                      # Dev Tools
 ```
 
 ## Data Flow
 
-1. **Capture**: `VisionEngine` captures a frame from the defined `monitor_region`.
-2. **Process**: Frame is processed (Greyscale -> Threshold) and sent to Tesseract.
-3. **Detect**: Text is cleaned and normalized. If it matches a pattern (e.g., "JOUR"), it's sent to the `App` via callback.
-4. **Decide**: `App` receives the trigger.
-    - It activates **Fast Mode** to gather more samples.
-    - It pushes the result to a **Time-Window Buffer (2.5s)**.
-    - If the buffer reaches a consensus (e.g., 2+ "DAY 2" signals), it triggers the state change.
-5. **Render**: `Overlay` updates the text/timer on the screen.
+1. **Capture**: `VisionEngine` (via `VisionService`) captures a frame.
+2. **Process**: OCR is performed. If text is found, observers are notified.
+3. **Event**: `StateService` (observer) receives the raw text event.
+4. **Decide**: `StateService` filters the event through its **Time-Window Buffer**.
+5. **Update**: If a state change occurs, `StateService` calls `OverlayService.update_timer()`.
+6. **Render**: `OverlayService` updates the Tkinter canvas.
