@@ -1,0 +1,7 @@
+samples/
+debug_images/
+tuning_results/
+__pycache__/
+*.log
+ocr_log.txt
+.vscode/

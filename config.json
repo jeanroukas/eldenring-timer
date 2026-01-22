@@ -1,0 +1,19 @@
+{
+    "monitor_region": {
+        "top": 1093,
+        "left": 1500,
+        "width": 832,
+        "height": 224
+    },
+    "tesseract_cmd": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+    "debug_mode": true,
+    "save_debug_images": false,
+    "hdr_mode": true,
+    "victory_region": {
+        "top": 87,
+        "left": 263,
+        "width": 232,
+        "height": 93
+    },
+    "save_raw_samples": true
+}
