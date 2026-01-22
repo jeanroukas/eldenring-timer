@@ -15,6 +15,9 @@ class ServiceContainer:
     def register(self, interface: Type[T], implementation: T) -> None:
         """Register a service implementation for an interface."""
         self._services[interface] = implementation
+        # Simple Dependency Injection for property setters if needed
+        # but for now we rely on constructor injection manually in main.py
+
 
     def resolve(self, interface: Type[T]) -> T:
         """Resolve a service by its interface."""

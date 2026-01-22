@@ -3,12 +3,13 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QCheckBox, QTabWidget, QLabel, 
                              QSlider, QFormLayout, QGroupBox)
 from PyQt6.QtCore import Qt, pyqtSignal
-from src.services.base_service import IConfigService
+from src.services.base_service import IConfigService, IDatabaseService
 
 class SettingsWindow(QMainWindow):
-    def __init__(self, config_service: IConfigService):
+    def __init__(self, config_service: IConfigService, db_service: IDatabaseService = None):
         super().__init__()
         self.config_service = config_service
+        self.db_service = db_service
         self.setWindowTitle("Elden Ring Timer Settings")
         self.setMinimumSize(400, 300)
 
@@ -25,6 +26,8 @@ class SettingsWindow(QMainWindow):
         self.setup_general_tab()
         self.setup_capture_tab()
         self.setup_ocr_tab()
+        if self.db_service:
+            self.setup_stats_tab()
 
         # Footer Buttons
         footer = QHBoxLayout()
@@ -83,7 +86,49 @@ class SettingsWindow(QMainWindow):
         
         layout.addWidget(group)
         layout.addStretch()
+        layout.addWidget(group)
+        layout.addStretch()
         self.tabs.addTab(tab, "OCR")
+
+    def setup_stats_tab(self):
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        
+        stats = self.db_service.get_stats()
+        
+        if not stats:
+            layout.addRow(QLabel("No statistics available."))
+        else:
+            layout.addRow("Total Runs:", QLabel(str(stats.get("total_runs", 0))))
+            layout.addRow("Victories:", QLabel(str(stats.get("victories", 0))))
+            layout.addRow("Win Rate:", QLabel(stats.get("win_rate", "N/A")))
+            layout.addRow("Avg Duration:", QLabel(stats.get("avg_duration", "N/A")))
+            
+        btn_refresh = QPushButton("Refresh")
+        btn_refresh.clicked.connect(lambda: self.refresh_stats(layout))
+        layout.addRow(btn_refresh)
+        
+        self.tabs.addTab(tab, "Statistics")
+
+    def refresh_stats(self, layout):
+        # Clear layout rows (hacky for QFormLayout)
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget: widget.deleteLater()
+            
+        stats = self.db_service.get_stats()
+        if not stats:
+            layout.addRow(QLabel("No statistics available."))
+        else:
+            layout.addRow("Total Runs:", QLabel(str(stats.get("total_runs", 0))))
+            layout.addRow("Victories:", QLabel(str(stats.get("victories", 0))))
+            layout.addRow("Win Rate:", QLabel(stats.get("win_rate", "N/A")))
+            layout.addRow("Avg Duration:", QLabel(stats.get("avg_duration", "N/A")))
+            
+        btn_refresh = QPushButton("Refresh")
+        btn_refresh.clicked.connect(lambda: self.refresh_stats(layout))
+        layout.addRow(btn_refresh)
 
     def save_and_close(self):
         # Update config service

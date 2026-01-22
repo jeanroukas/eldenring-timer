@@ -3,11 +3,12 @@ import argparse
 import ctypes
 from PyQt6.QtWidgets import QApplication
 from src.service_container import ServiceContainer
-from src.services.base_service import IConfigService, IVisionService, IOverlayService, IStateService
+from src.services.base_service import IConfigService, IVisionService, IOverlayService, IStateService, IDatabaseService
 from src.services.config_service import ConfigService
 from src.services.vision_service import VisionService
 from src.services.overlay_service import OverlayService
 from src.services.state_service import StateService
+from src.services.database_service import DatabaseService
 from src.region_selector import RegionSelector
 from src.ui.settings_window import SettingsWindow
 
@@ -51,8 +52,12 @@ class Launcher:
         self.overlay_service = OverlayService()
         self.container.register(IOverlayService, self.overlay_service)
 
-        # 4. State
-        self.state_service = StateService(self.config_service, self.vision_service, self.overlay_service)
+        # 4. Database
+        self.db_service = DatabaseService()
+        self.container.register(IDatabaseService, self.db_service)
+
+        # 5. State
+        self.state_service = StateService(self.config_service, self.vision_service, self.overlay_service, self.db_service)
         self.container.register(IStateService, self.state_service)
 
     def run(self):
@@ -70,7 +75,8 @@ class Launcher:
 
     def show_config_ui(self):
         self.config_service.initialize() # Load config
-        self.settings = SettingsWindow(self.config_service)
+        self.db_service.initialize() # Load DB for stats
+        self.settings = SettingsWindow(self.config_service, self.db_service)
         self.settings.btn_select_region.clicked.connect(self.select_region)
         self.settings.show()
 

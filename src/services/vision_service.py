@@ -49,6 +49,10 @@ class VisionService(IVisionService):
         if self.engine:
             self.engine.set_scan_delay(delay)
 
+    def save_labeled_sample(self, label: str) -> None:
+        if self.engine:
+            self.engine.save_labeled_sample(label)
+
     def add_observer(self, callback: Callable[[str, int, float, List[Dict], float], None]) -> None:
         if callback not in self.observers:
             self.observers.append(callback)

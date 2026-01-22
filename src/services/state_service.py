@@ -6,7 +6,7 @@ import threading
 import os
 import json
 from typing import Optional, List, Dict
-from src.services.base_service import IStateService, IConfigService, IVisionService, IOverlayService
+from src.services.base_service import IStateService, IConfigService, IVisionService, IOverlayService, IDatabaseService
 from src.pattern_manager import PatternManager
 try:
     import keyboard
@@ -15,10 +15,13 @@ except ImportError:
 import psutil
 
 class StateService(IStateService):
-    def __init__(self, config: IConfigService, vision: IVisionService, overlay: IOverlayService):
+    def __init__(self, config: IConfigService, vision: IVisionService, overlay: IOverlayService, db: IDatabaseService):
         self.config = config
         self.vision = vision
         self.overlay = overlay
+        self.db = db
+        
+        self.current_session_id = -1
         
         self.running = False
         self.is_hibernating = True
@@ -369,9 +372,20 @@ class StateService(IStateService):
              self.schedule(int(self.victory_check_interval * 1000), self.check_victory_loop)
 
     def handle_trigger(self, trigger_text: str):
+        if self.current_session_id == -1 and trigger_text == "DAY 1":
+             self.current_session_id = self.db.create_session()
+             print(f"StateService: Started Session {self.current_session_id}")
+             
         if trigger_text == "DAY 1": self.set_phase_by_name_start("Day 1")
         elif trigger_text == "DAY 2": self.set_phase_by_name_start("Day 2")
         elif trigger_text == "DAY 3": self.set_phase_by_name_start("Day 3")
+        
+        if self.current_session_id != -1:
+             self.db.log_event(self.current_session_id, "TRIGGER", trigger_text)
+
+        # Auto-Label Training Data
+        if self.config.get("save_raw_samples", True):
+             self.vision.save_labeled_sample(trigger_text)
 
     def set_phase_by_name_start(self, name_start_str):
         # Logique simplifiée pour mapper Day 1 -> Phase 0, Day 2 -> Phase 5 etc.
@@ -388,6 +402,10 @@ class StateService(IStateService):
         self.current_phase_index = index
         self.start_time = time.time()
         self.update_overlay_now()
+        
+        if self.current_session_id != -1:
+             phase_name = self.phases[index]["name"]
+             self.db.log_event(self.current_session_id, "PHASE_CHANGE", phase_name)
 
     def trigger_day_1(self):
         is_in_day_1 = (0 <= self.current_phase_index <= 3)
@@ -438,6 +456,14 @@ class StateService(IStateService):
         if text and score >= 60:
              print(f"VICTORY: {text} ({score})")
              self.stop_timer_victory()
+             
+             if self.current_session_id != -1:
+                 self.db.end_session(self.current_session_id, "VICTORY")
+                 self.current_session_id = -1
+                 
+             if self.config.get("save_raw_samples", True):
+                 self.vision.save_labeled_sample("VICTORY")
+
              self.victory_check_active = False
         else:
              self.schedule(int(self.victory_check_interval * 1000), self.check_victory_loop)
@@ -481,7 +507,16 @@ class StateService(IStateService):
     def handle_false_positive(self):
         print("Manual Feedback: False Positive")
         self.timer_frozen = False
+        self.timer_frozen = False
         self.current_phase_index = -1
+        
+        # If it was a false positive start, maybe we should delete the session?
+        # For now, let's just mark it as ABANDONED/INVALID if it was just started?
+        # Simpler: just reset ID
+        if self.current_session_id != -1:
+             self.db.end_session(self.current_session_id, "ABANDONED")
+             self.current_session_id = -1
+
         self.overlay.update_timer("Waiting...")
         if self.current_matched_pattern:
              self.pattern_manager.punish(self.current_matched_pattern)

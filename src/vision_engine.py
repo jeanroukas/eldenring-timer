@@ -39,6 +39,9 @@ class VisionEngine:
         self.last_wgc_frame = None
         self.wgc_lock = threading.Lock()
         
+        self.last_raw_frame = None
+        self.last_frame_timestamp = 0
+        
         self._init_camera()
 
         # Configure Tesseract path
@@ -522,6 +525,10 @@ class VisionEngine:
                     time.sleep(0.1)
                     continue
                 
+                # Cache for labeled saving
+                self.last_raw_frame = img.copy()
+                self.last_frame_timestamp = time.time()
+                
                 brightness = 0
                 if img is not None:
                      brightness = np.mean(img)
@@ -733,3 +740,32 @@ class VisionEngine:
             except Exception as e:
                 print(f"Vision error: {e}")
                 time.sleep(1)
+
+    def save_labeled_sample(self, label: str):
+        """
+        Saves the last captured frame as a labeled sample for ML training.
+        """
+        if self.last_raw_frame is None: return
+        
+        # Avoid saving if frame is too old (> 1.0s)
+        if time.time() - self.last_frame_timestamp > 1.0:
+            return
+
+        try:
+            # Sanitize label
+            safe_label = "".join(c for c in label if c.isalnum() or c in " -_").strip()
+            if not safe_label: safe_label = "UNKNOWN"
+            
+            # Directory: samples/LABEL/
+            label_dir = os.path.join(self.project_root, "samples", safe_label)
+            os.makedirs(label_dir, exist_ok=True)
+            
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = os.path.join(label_dir, f"{ts}.png")
+            
+            cv2.imwrite(filename, self.last_raw_frame)
+            print(f"Saved labeled sample: {filename}")
+            
+        except Exception as e:
+            print(f"Failed to save labeled sample: {e}")
+

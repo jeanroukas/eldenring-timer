@@ -46,6 +46,11 @@ class IVisionService(IService):
         """Register a callback for OCR results."""
         pass
 
+    @abstractmethod
+    def save_labeled_sample(self, label: str) -> None:
+        """Saves the current frame as a training sample for the given label."""
+        pass
+
 class IOverlayService(IService):
     """Interface for the UI overlay."""
     @abstractmethod
@@ -77,3 +82,26 @@ class IStateService(IService):
     @abstractmethod
     def handle_trigger(self, trigger_text: str) -> None:
         pass
+
+class IDatabaseService(IService):
+    """Interface for database and analytics."""
+    @abstractmethod
+    def create_session(self) -> int:
+        """Starts a new game session and returns its ID."""
+        pass
+
+    @abstractmethod
+    def end_session(self, session_id: int, result: str) -> None:
+        """Ends a session with a result (VICTORY, DEFEAT, etc)."""
+        pass
+
+    @abstractmethod
+    def log_event(self, session_id: int, event_type: str, payload: str = None) -> None:
+        """Logs a specific event during a session."""
+        pass
+        
+    @abstractmethod
+    def get_stats(self) -> Dict[str, Any]:
+        """Returns aggregated statistics."""
+        pass
+
