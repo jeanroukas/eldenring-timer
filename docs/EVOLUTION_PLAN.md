@@ -8,55 +8,31 @@ L'approche recommandée est de procéder par étapes séquentielles pour garanti
 
 ---
 
-## 📅 Phase 1 : Refactoring & Architecture (Semaines 1-2)
+## ✅ Phase 1 : Refactoring & Architecture (Terminé)
 
-**Objectif :** Rendre le code modulaire, testable et prêt pour l'extension (Point 6).
+**Objectif :** Rendre le code modulaire, testable et prêt pour l'extension.
 
-### 1.1 Injection de Dépendances (DI)
-
-Actuellement, `App` est un "God Object". Nous allons découpler les services.
-
-- **Action** : Créer un conteneur de services (ex: implémentation simple ou via `dependency_injector`).
+- **Injection de Dépendances (DI)** : Implémenté via `ServiceContainer`.
 - **Nouveaux Services** :
-  - `IConfigService` : Gestion de la configuration (JSON).
-  - `IVisionService` : Abstraction de la capture et de l'OCR.
-  - `IOverlayService` : Abstraction de l'affichage (permettra de changer de Tkinter à Qt plus tard).
-  - `IStateService` : Gestion de la machine à états (Day 1 -> Day 2 -> Boss).
-
-### 1.2 Nettoyage de `main.py`
-
-- **Action** : Réduire `main.py` à un simple point d'entrée qui initialise le conteneur DI et lance l'application.
+  - `ConfigService` : Gestion de la configuration.
+  - `VisionService` : Abstraction de l'OCR.
+  - `OverlayService` : Abstraction de l'affichage.
+  - `StateService` : Gestion de la machine à états.
+- **Nettoyage de `main.py`** : Réduit à un point d'entrée minimaliste.
 
 ---
 
-## 🎨 Phase 2 : Modernisation UI & UX (Semaines 3-4)
+## ✅ Phase 2 : Modernisation UI & UX (Terminé)
 
-**Objectif :** Remplacer l'interface Tkinter vieillissante et offrir une configuration accessible (Points 1 & 3).
+**Objectif :** Remplacer l'interface Tkinter par PyQt6 et offrir une configuration accessible.
 
-### 2.1 Choix Technologique : PyQt6 / PySide6
-
-PyQt offre le meilleur équilibre entre performance native, capacités de transparence/overlay et look moderne.
-
-### 2.2 Nouvel Overlay (Point 3)
-
-- **Création du `ModernOverlay`** :
-  - Fenêtre sans bordure, fond transparent, toujours au-dessus (`WindowStaysOnTopHint`).
-  - Utilisation de **QML** ou de Widgets stylisés avec CSS (QSS) pour les dégradés et animations.
-  - Ajout d'animations (fadeIn/fadeOut) lors des changements d'état.
-
-### 2.3 Interface de Paramètres (Point 1)
-
-- **Création du `SettingsWindow`** :
-  - Fenêtre séparée accessible via un raccourci ou tray icon.
-  - **Onglets** :
-    - *Général* : Raccourcis clavier.
-    - *Capture* : Sélection de l'écran, prévisualisation de la zone en temps réel.
-    - *OCR* : Réglage des seuils avec feedback visuel immédiat.
-  - **Sauvegarde** : Écriture directe dans `config.json` via `ConfigService`.
+- **Choix Technologique** : **PyQt6** utilisé pour l'ensemble de l'interface.
+- **Nouvel Overlay** : `ModernOverlay` avec rendu haute qualité (outlines) et fenêtrage natif transparent.
+- **Interface de Paramètres** : `SettingsWindow` avec onglets (Général, Capture, OCR) et sauvegarde en temps réel.
 
 ---
 
-## 🧠 Phase 3 : Intelligence & Données (Semaines 5-6)
+## 🧠 Phase 3 : Intelligence & Données (En cours)
 
 **Objectif :** Fiabiliser la détection et donner du sens aux parties jouées (Points 4 & 8).
 
@@ -66,7 +42,6 @@ PyQt offre le meilleur équilibre entre performance native, capacités de transp
 - **Entraînement** :
   - *Option A (Léger)* : Entraînement fin (Fine-tuning) de Tesseract sur la police "Mantinia" (ou proche) utilisée dans le jeu.
   - *Option B (Moderne)* : Entraînement d'un petit modèle classification d'images (CNN simple ou ResNet18 réduit) avec PyTorch/ONNX.
-    - **Avantage** : Plus besoin de "cleaner" l'image parfaitement. Le modèle apprend à reconnaître "JOUR 1" même avec du bruit ou en HDR.
 - **Intégration** : Remplacer l'appel Tesseract par l'inférence du nouveau modèle dans `VisionEngine`.
 
 ### 3.2 Analytique & Persistance (Point 8)
@@ -83,25 +58,21 @@ PyQt offre le meilleur équilibre entre performance native, capacités de transp
 
 ## 📋 Résumé des Tâches Techniques
 
-### Architecture
+### Architecture & UI (Phase 1 & 2)
 
-- [ ] Créer `src/services/` et définir les interfaces.
-- [ ] Refactorer `VisionEngine` pour implémenter `IVisionService`.
-- [ ] Refactorer `Overlay` pour implémenter `IOverlayService`.
+- [x] Créer `src/services/` et définir les interfaces.
+- [x] Refactorer `VisionEngine` pour implémenter `IVisionService`.
+- [x] Refactorer `Overlay` pour implémenter `IOverlayService`.
+- [x] Installer `PyQt6`.
+- [x] Créer `qt_overlay.py` et `settings_window.py`.
 
-### Interface (PyQt6)
-
-- [ ] Installer `PyQt6`.
-- [ ] Prototyper `ModernOverlay.py`.
-- [ ] Créer `SettingsWindow.py` avec formulaires liés à la config.
-
-### Data
+### Data (Phase 3)
 
 - [ ] Créer `src/database.py` (Wrapper SQLite).
 - [ ] Ajouter les hooks d'enregistrement dans `StateService`.
 
-### OCR ML
+### OCR ML (Phase 3)
 
 - [ ] Script d'extraction de dataset (automatisé).
 - [ ] Script d'entraînement (Google Colab ou local).
-- [ ] Convertisseur de modèle vers ONNX Runtime (pour inférence rapide en C++ sans dépendance lourde PyTorch).
+- [ ] Convertisseur de modèle vers ONNX Runtime.

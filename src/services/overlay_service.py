@@ -1,9 +1,13 @@
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer, Qt
+from abc import ABCMeta
 from typing import Callable, Optional
 from src.services.base_service import IOverlayService
 from src.ui.qt_overlay import ModernOverlay
 
-class OverlayService(QObject, IOverlayService):
+class OverlayMeta(type(QObject), ABCMeta):
+    pass
+
+class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
     # Signal to marshall calls to the main thread
     _schedule_signal = pyqtSignal(int, object) # delay, callback
 
