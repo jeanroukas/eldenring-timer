@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QMainWindow, QApplication, QWidget
 from PyQt6.QtCore import Qt, QTimer, QPoint
-from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QFontMetrics
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QFontMetrics, QPainterPath
 
 class ModernOverlay(QMainWindow):
     def __init__(self):
@@ -58,7 +58,7 @@ class ModernOverlay(QMainWindow):
         outline_color = QColor(0, 0, 0, 255)
         text_color = QColor(255, 255, 255, 255)
         
-        path = QPainter.QPainterPath()
+        path = QPainterPath()
         path.addText(x, y, font, display_text)
         
         # Stroke (Outline)

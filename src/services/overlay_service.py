@@ -17,9 +17,11 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
         self.is_recording = False
         
         # Connect signal to slot (will execute in Main Thread)
-        self._schedule_signal.connect(self._execute_schedule)
+        self._schedule_signal.connect(self._execute_schedule, Qt.ConnectionType.QueuedConnection)
 
     def initialize(self) -> bool:
+        self.create_overlay()
+        self.overlay.hide()
         return True
 
     def shutdown(self) -> None:

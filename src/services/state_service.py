@@ -12,6 +12,7 @@ try:
     import keyboard
 except ImportError:
     keyboard = None
+import psutil
 
 class StateService(IStateService):
     def __init__(self, config: IConfigService, vision: IVisionService, overlay: IOverlayService):
@@ -74,6 +75,7 @@ class StateService(IStateService):
         self.last_beep_second = -1
 
     def initialize(self) -> bool:
+        print("StateService: Initializing...")
         self.running = True
         self.vision.add_observer(self.on_ocr_result)
         
@@ -87,13 +89,102 @@ class StateService(IStateService):
             except Exception as e:
                 print(f"Failed to register hotkeys: {e}")
 
-        # Start process monitor loop
-        self.schedule(0, self.check_process_loop)
+    def initialize(self) -> bool:
+        self.running = True
+        self.vision.add_observer(self.on_ocr_result)
         
-        # Start timer update loop
-        self.schedule(0, self.update_timer_loop)
+        # Setup Hotkeys
+        if keyboard:
+            try:
+                keyboard.add_hotkey('&', lambda: self.handle_manual_feedback("DAY 1"))
+                keyboard.add_hotkey('é', lambda: self.handle_manual_feedback("DAY 2"))
+                keyboard.add_hotkey('"', lambda: self.handle_manual_feedback("DAY 3"))
+                keyboard.add_hotkey('(', self.handle_false_positive)
+            except Exception as e:
+                print(f"Failed to register hotkeys: {e}")
+
+        # Start background thread for loops
+        self.thread = threading.Thread(target=self._run_loops, daemon=True)
+        self.thread.start()
         
         return True
+
+    def _run_loops(self):
+        last_process_check = 0
+        while self.running:
+            now = time.time()
+            
+            # 1. Process Check (every 5s)
+            if now - last_process_check >= 5.0:
+                self.check_process_task()
+                last_process_check = now
+            
+            # 2. Update Timer (every 100ms)
+            self.update_timer_task()
+            
+            time.sleep(0.1)
+
+    def check_process_task(self):
+        try:
+            game_running = self.check_process(self.game_process)
+            if game_running and self.is_hibernating:
+                 self.schedule(0, self.wake_up)
+            elif not game_running and not self.is_hibernating:
+                 self.schedule(0, self.hibernate)
+        except Exception as e:
+            print(f"StateService: check_process_task error: {e}")
+
+    def update_timer_task(self):
+        if self.timer_frozen:
+            return
+
+        if self.start_time is not None and self.current_phase_index >= 0:
+            phase = self.phases[self.current_phase_index]
+            elapsed = time.time() - self.start_time
+            
+            if phase["duration"] > 0:
+                remaining = max(0, phase["duration"] - elapsed)
+                remaining_int = int(remaining)
+                
+                # Phase Auto Advance
+                if remaining == 0:
+                    self.current_phase_index += 1
+                    self.start_time = time.time()
+                    return
+
+                mins = int(remaining // 60)
+                secs = int(remaining % 60)
+                timer_str = f"{mins:02}:{secs:02}"
+                
+                # Audio Beeps (Thread safe generally, but winsound might be picky)
+                if remaining_int in [30, 10, 3, 2, 1] and remaining_int != self.last_beep_second:
+                     try: winsound.Beep(1000 if remaining_int > 3 else 1500, 200)
+                     except: pass
+                     self.last_beep_second = remaining_int
+                elif remaining_int not in [30, 10, 3, 2, 1]:
+                     self.last_beep_second = -1
+            else:
+                # Stopwatch
+                mins = int(elapsed // 60)
+                secs = int(elapsed % 60)
+                timer_str = f"{mins:02}:{secs:02}"
+                
+            prefix = ""
+            if self.fast_mode_active: prefix += "🔴 "
+            # Warning blink
+            next_idx = self.current_phase_index + 1
+            if phase["duration"] > 0 and next_idx < len(self.phases) and "Shrinking" in self.phases[next_idx]["name"]:
+                remaining = max(0, phase["duration"] - elapsed)
+                if remaining <= 30 and int(time.time() * 2) % 2 == 0:
+                    prefix += "⚠️ "
+
+            self.overlay.update_timer(f"{prefix}{phase['name']} - {timer_str}")
+
+        else:
+             text = "Waiting for Day 1..."
+             if self.fast_mode_active: text = "🔴 " + text
+             self.overlay.update_timer(text)
+
 
     def shutdown(self) -> None:
         self.running = False
@@ -102,24 +193,19 @@ class StateService(IStateService):
         self.overlay.schedule(delay_ms, callback)
 
     # --- Process Monitor ---
-    def check_process_loop(self):
-        if not self.running: return
-        
-        game_running = self.check_process(self.game_process)
-        
-        if game_running and self.is_hibernating:
-             self.wake_up()
-        elif not game_running and not self.is_hibernating:
-             self.hibernate()
-            
-        self.schedule(5000, self.check_process_loop)
 
     def check_process(self, process_name):
+        # print(f"DEBUG: check_process({process_name})")
         try:
-            cmd = 'tasklist'
-            output = subprocess.check_output(cmd, shell=True).decode(errors='ignore')
-            return process_name.lower() in output.lower()
-        except:
+            for proc in psutil.process_iter(['name']):
+                try:
+                    if proc.info['name'] and proc.info['name'].lower() == process_name.lower():
+                        return True
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            return False
+        except Exception as e:
+            print(f"StateService: Process check error: {e}")
             return False
 
     def wake_up(self):
@@ -331,65 +417,6 @@ class StateService(IStateService):
         return self.phases[self.current_phase_index]["name"]
 
     # --- Timer Loop ---
-    def update_timer_loop(self):
-        if not self.running: return
-
-        if self.timer_frozen:
-            # Stopped state
-            self.schedule(100, self.update_timer_loop)
-            return
-
-        if self.start_time and self.current_phase_index >= 0:
-            phase = self.phases[self.current_phase_index]
-            elapsed = time.time() - self.start_time
-            
-            if phase["duration"] > 0:
-                remaining = max(0, phase["duration"] - elapsed)
-                remaining_int = int(remaining)
-                
-                # Phase Auto Advance
-                if remaining == 0:
-                    self.current_phase_index += 1
-                    self.start_time = time.time() # Reset start time for next phase
-                    # Logic needed if next phase is Boss Manual?
-                    # phases list has duration 0 for Boss 1/2.
-                    self.update_timer_loop() # Recursive immediate update
-                    return
-
-                mins = int(remaining // 60)
-                secs = int(remaining % 60)
-                timer_str = f"{mins:02}:{secs:02}"
-                
-                # Audio Beeps
-                if remaining_int in [30, 10, 3, 2, 1] and remaining_int != self.last_beep_second:
-                     try: winsound.Beep(1000 if remaining_int > 3 else 1500, 200)
-                     except: pass
-                     self.last_beep_second = remaining_int
-                elif remaining_int not in [30, 10, 3, 2, 1]:
-                     self.last_beep_second = -1
-            else:
-                # Stopwatch
-                mins = int(elapsed // 60)
-                secs = int(elapsed % 60)
-                timer_str = f"{mins:02}:{secs:02}"
-                
-            prefix = ""
-            if self.fast_mode_active: prefix += "🔴 "
-            # Warning blink
-            next_idx = self.current_phase_index + 1
-            if phase["duration"] > 0 and next_idx < len(self.phases) and "Shrinking" in self.phases[next_idx]["name"]:
-                remaining = max(0, phase["duration"] - elapsed)
-                if remaining <= 30 and int(time.time() * 2) % 2 == 0:
-                    prefix += "⚠️ "
-
-            self.overlay.update_timer(f"{prefix}{phase['name']} - {timer_str}")
-
-        else:
-             text = "Waiting for Day 1..."
-             if self.fast_mode_active: text = "🔴 " + text
-             self.overlay.update_timer(text)
-
-        self.schedule(100, self.update_timer_loop)
 
     def update_overlay_now(self):
         # Force update logic for immediate feedback
