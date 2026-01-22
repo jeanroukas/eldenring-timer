@@ -1,7 +1,7 @@
-import tkinter as tk
-import argparse
 import sys
+import argparse
 import ctypes
+from PyQt6.QtWidgets import QApplication
 from src.service_container import ServiceContainer
 from src.services.base_service import IConfigService, IVisionService, IOverlayService, IStateService
 from src.services.config_service import ConfigService
@@ -9,6 +9,7 @@ from src.services.vision_service import VisionService
 from src.services.overlay_service import OverlayService
 from src.services.state_service import StateService
 from src.region_selector import RegionSelector
+from src.ui.settings_window import SettingsWindow
 
 # Set DPI Awareness
 try:
@@ -29,9 +30,9 @@ class Launcher:
             print("Another instance is already running. Exiting.")
             sys.exit(0)
 
-        self.root = tk.Tk()
-        self.root.withdraw()
-
+        # Qt Application
+        self.app = QApplication(sys.argv)
+        
         self.container = ServiceContainer()
         self.setup_services()
         
@@ -45,7 +46,9 @@ class Launcher:
         self.container.register(IVisionService, self.vision_service)
 
         # 3. Overlay
-        self.overlay_service = OverlayService(self.root)
+        # Note: OverlayService now doesn't need root window like Tkinter did,
+        # but it owns the ModernOverlay.
+        self.overlay_service = OverlayService()
         self.container.register(IOverlayService, self.overlay_service)
 
         # 4. State
@@ -62,60 +65,32 @@ class Launcher:
         else:
             self.start_application()
 
-        try:
-            self.root.mainloop()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self.container.shutdown_all()
+        # Run Qt Event Loop
+        sys.exit(self.app.exec())
 
     def show_config_ui(self):
-        self.root.title("Nightreign Timer Controller")
-        self.root.geometry("300x200")
-        self.root.deiconify()
-        
-        # Load config to vars
         self.config_service.initialize() # Load config
-        
-        tk.Button(self.root, text="Select Region", command=self.select_region).pack(pady=10)
-        
-        self.debug_var = tk.BooleanVar(value=self.config_service.get("debug_mode", False))
-        self.save_images_var = tk.BooleanVar(value=self.config_service.get("save_debug_images", False))
-        self.hdr_mode_var = tk.BooleanVar(value=self.config_service.get("hdr_mode", False))
-        self.save_raw_samples_var = tk.BooleanVar(value=self.config_service.get("save_raw_samples", True))
-        
-        tk.Checkbutton(self.root, text="Debug Mode (Logs)", variable=self.debug_var, command=self.update_config).pack()
-        tk.Checkbutton(self.root, text="Save Debug Images", variable=self.save_images_var, command=self.update_config).pack()
-        tk.Checkbutton(self.root, text="HDR Mode (High Compatibility)", variable=self.hdr_mode_var, command=self.update_config).pack()
-        tk.Checkbutton(self.root, text="Collect Training Data (Raw)", variable=self.save_raw_samples_var, command=self.update_config).pack()
-
-        tk.Button(self.root, text="Start Overlay", command=self.start_application_from_ui).pack(pady=10)
+        self.settings = SettingsWindow(self.config_service)
+        self.settings.btn_select_region.clicked.connect(self.select_region)
+        self.settings.show()
 
     def select_region(self):
-        self.root.withdraw()
-        RegionSelector(self.on_region_selected)
+        # We need a Tkinter root still for RegionSelector as it's built on Tkinter
+        # FOR NOW: We keep it as is, or migrate it.
+        # Calling RegionSelector might block or need a root.
+        import tkinter as tk
+        temp_root = tk.Tk()
+        temp_root.withdraw()
+        RegionSelector(lambda r: self.on_region_selected(r, temp_root))
+        temp_root.mainloop()
 
-    def on_region_selected(self, region):
+    def on_region_selected(self, region, temp_root):
         self.config_service.set("monitor_region", region)
-        self.vision_service.set_region(region) # Might not be initialized yet but method handles it
+        self.vision_service.set_region(region)
         print(f"Region saved: {region}")
-        self.root.deiconify()
-
-    def update_config(self):
-        self.config_service.set("debug_mode", self.debug_var.get())
-        self.config_service.set("save_debug_images", self.save_images_var.get())
-        self.config_service.set("hdr_mode", self.hdr_mode_var.get())
-        self.config_service.set("save_raw_samples", self.save_raw_samples_var.get())
-        # ConfigService auto-saves on set
-
-    def start_application_from_ui(self):
-        self.root.withdraw()
-        self.start_application()
+        temp_root.destroy()
 
     def start_application(self):
-        # If we came from config UI, ConfigService is already "initialized" (loaded).
-        # ServiceContainer.initialize_all() will call initialize() on all.
-        # ConfigService.initialize() re-loads, which is fine.
         print("Starting Services...")
         self.container.initialize_all()
 

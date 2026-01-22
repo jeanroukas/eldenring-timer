@@ -1,6 +1,6 @@
 # Project Architecture
 
-This document describes the internal architecture of the Elden Ring Nightreign Timer (Phase 1 Refactoring).
+This document describes the internal architecture of the Elden Ring Nightreign Timer (Phase 2 - UI Modernization).
 
 ## Overview
 
@@ -8,7 +8,7 @@ The application is an **Event-Driven OCR Overlay** utilizing a **Service-Oriente
 
 ## Core Services
 
-The application has been refactored from a monolithic class into distinct services managed by a Dependency Injection container.
+The application is built around distinct services managed by a Dependency Injection container.
 
 ### 1. `ServiceContainer` (in `src/service_container.py`)
 
@@ -25,16 +25,14 @@ A singleton container that manages the lifecycle and dependency resolution of al
 - **Logic**:
   - Manages the background capture thread.
   - Implements the **2-Pass OCR Strategy** (Dynamic Threshold -> Adaptive Fallback).
-  - Handles **Fast Mode** (20Hz scanning) when triggers are suspected.
   - Notifies observers (StateService) when text is detected.
 
 ### 4. `IOverlayService` (in `src/services/overlay_service.py`)
 
-- **Responsibility**: Manages the UI View (Tkinter).
+- **Responsibility**: Manages the UI View (**PyQt6**).
 - **Logic**:
-  - Renders the transparent overlay window.
-  - Exposes methods like `update_timer(text)` and `show_recording(bool)`.
-  - Handles UI thread scheduling.
+  - Owns and renders the `ModernOverlay` window.
+  - Handles UI thread scheduling via Qt Signals.
 
 ### 5. `IStateService` (in `src/services/state_service.py`)
 
@@ -43,38 +41,38 @@ A singleton container that manages the lifecycle and dependency resolution of al
   - **Game Loop**: Monitors `nightreign.exe` to wake/hibernate the app.
   - **State Machine**: Tracks phases (Day 1 -> Storm -> Boss...).
   - **Consensus Algorithm**: Buffers OCR signals to prevent false positives.
-  - **Logic**: Handles Boss 3 sequences (Black screen detection) and Victory checks.
+
+## UI Components (in `src/ui/`)
+
+- **`ModernOverlay`**: A frameless, transparent Qt window that stays on top. Uses custom painting for high-quality text outlines.
+- **`SettingsWindow`**: A tabbed configuration interface with live persistence via `ConfigService`.
 
 ## File Structure
 
 ```
 .
-├── main.py                     # Application Entry Point (Bootstrapper)
+├── main.py                     # Application Entry Point (QApplication)
 ├── config.json                 # User Configuration
-├── requirements.txt            # Dependencies
-├── monitor.log                 # Service watchdog log
-├── ocr_log.txt                 # Detailed OCR logs
-├── ocr_patterns.json           # OCR fuzzy matching patterns
+├── requirements.txt            # Dependencies (including PyQt6)
 ├── src/                        # Source Code
 │   ├── service_container.py    # DI Container
-│   ├── pattern_manager.py      # Fuzzy Match Logic
-│   ├── region_selector.py      # UI Utility
-│   ├── vision_engine.py        # Core Computer Vision Implementation
-│   └── services/               # Service Layer
-│       ├── base_service.py     # Interfaces (Abstract Base Classes)
-│       ├── config_service.py   # Config Implementation
-│       ├── overlay_service.py  # UI Implementation
-│       ├── state_service.py    # Game Logic Implementation
-│       └── vision_service.py   # Vision Wrapper
+│   ├── vision_engine.py        # Core OCR logic
+│   ├── services/               # Service Layer
+│   │   ├── config_service.py
+│   │   ├── overlay_service.py  # Qt implementation
+│   │   ├── state_service.py
+│   │   └── vision_service.py
+│   └── ui/                     # UI Layer (PyQt6)
+│       ├── qt_overlay.py       # Transparent Window
+│       └── settings_window.py  # Configuration UI
 ├── tests/                      # Tests
 └── tools/                      # Dev Tools
 ```
 
 ## Data Flow
 
-1. **Capture**: `VisionEngine` (via `VisionService`) captures a frame.
-2. **Process**: OCR is performed. If text is found, observers are notified.
-3. **Event**: `StateService` (observer) receives the raw text event.
-4. **Decide**: `StateService` filters the event through its **Time-Window Buffer**.
-5. **Update**: If a state change occurs, `StateService` calls `OverlayService.update_timer()`.
-6. **Render**: `OverlayService` updates the Tkinter canvas.
+1. **Capture**: `VisionEngine` captures a frame.
+2. **Detect**: `VisionService` notifies `StateService` of detected text.
+3. **Decide**: `StateService` processes triggers and updates the internal state.
+4. **Update**: `StateService` calls `OverlayService.update_timer()`.
+5. **Render**: `OverlayService` emits a signal to update the `ModernOverlay` widget.

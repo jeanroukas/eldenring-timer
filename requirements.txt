@@ -13,3 +13,4 @@ keyboard
 bettercam
 fuzzywuzzy
 python-Levenshtein
+PyQt6
