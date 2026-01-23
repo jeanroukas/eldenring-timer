@@ -61,6 +61,16 @@ class TrayService(QObject, ITrayService, metaclass=TrayMeta):
         sys.exit(0)
 
     def _create_icon(self) -> QIcon:
+        """Creates an icon from file or falls back to programmatic generation."""
+        # Try to load from assets
+        try:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            icon_path = os.path.join(base_dir, 'assets', 'icon.png')
+            if os.path.exists(icon_path):
+                return QIcon(icon_path)
+        except Exception as e:
+            print(f"Failed to load icon from file: {e}")
+
         """Creates a simple 64x64 icon with 'ER' text."""
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.GlobalColor.transparent)

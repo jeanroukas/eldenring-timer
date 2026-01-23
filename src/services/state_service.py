@@ -135,12 +135,14 @@ class StateService(IStateService):
         try:
             game_running = self.check_process(self.game_process)
             should_auto_hibernate = self.config.get("auto_hibernate", True)
+            
+            # Wake up if game is running OR if user disabled auto-hibernate (Manual Mode)
+            should_be_awake = game_running or (not should_auto_hibernate)
 
-            if game_running and self.is_hibernating:
+            if should_be_awake and self.is_hibernating:
                  self.schedule(0, self.wake_up)
-            elif not game_running and not self.is_hibernating:
-                 if should_auto_hibernate:
-                     self.schedule(0, self.hibernate)
+            elif not should_be_awake and not self.is_hibernating:
+                 self.schedule(0, self.hibernate)
         except Exception as e:
             logger.error(f"StateService: check_process_task error: {e}")
 
@@ -232,9 +234,8 @@ class StateService(IStateService):
 
     def on_config_changed(self):
         logger.info("StateService: Config updated, refreshing parameters...")
-        # Most parameters are read on-demand from self.config, 
-        # but we could force a wake_up/hibernate cycle if needed here.
-        pass
+        # Force a check immediately to respond to auto_hibernate toggle
+        self.check_process_task()
 
     # --- OCR & State Logic ---
     def on_ocr_result(self, text, width, offset, word_data, brightness=0, score=0):

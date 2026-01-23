@@ -71,15 +71,4 @@ class VisionService(IVisionService):
             
     def update_config(self):
          if self.engine:
-             # Since we passed config_service to engine, and engine assumes it's a dict...
-             # Wait, VisionEngine lines 29: self.config = config.
-             # line 33: self.region = config.get("monitor_region", {})
-             # If I pass ConfigService instance, it has .get() method, so it MIGHT work if VisionEngine only uses .get()
-             # But VisionEngine line 195: self.config["monitor_region"] = region. This assumes dict item assignment.
-             # ConfigService.set() is what I defined.
-             # I need to verify if ConfigService supports item assignment or if I should pass the internal dict.
-             # Or I update VisionEngine to use the service interface.
-             # For Phase 1, the plan said "Refactor VisionEngine to VisionService".
-             # To avoid modifying VisionEngine too much right now (risky), I should probably pass 'self.config_service._config' to it,
-             # OR wrap ConfigService to behave like a dict.
              pass

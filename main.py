@@ -10,7 +10,7 @@ from src.services.overlay_service import OverlayService
 from src.services.state_service import StateService
 from src.services.database_service import DatabaseService
 from src.services.tray_service import TrayService
-from src.region_selector import RegionSelector
+from src.ui.region_selector import RegionSelector
 from src.ui.settings_window import SettingsWindow
 
 # Set DPI Awareness
@@ -87,20 +87,17 @@ class Launcher:
         self.settings.show()
 
     def select_region(self):
-        # We need a Tkinter root still for RegionSelector as it's built on Tkinter
-        # FOR NOW: We keep it as is, or migrate it.
-        # Calling RegionSelector might block or need a root.
-        import tkinter as tk
-        temp_root = tk.Tk()
-        temp_root.withdraw()
-        RegionSelector(lambda r: self.on_region_selected(r, temp_root))
-        temp_root.mainloop()
-
-    def on_region_selected(self, region, temp_root):
+        # Modern properties of PyQt Region Selector
+        self.selector = RegionSelector()
+        self.selector.region_selected.connect(self.on_region_selected)
+        self.selector.show()
+        
+    def on_region_selected(self, region):
         self.config_service.set("monitor_region", region)
         self.vision_service.set_region(region)
         print(f"Region saved: {region}")
-        temp_root.destroy()
+        # Bring settings back to front if needed
+        self.settings.raise_()
 
     def start_application(self):
         print("Starting Services...")
