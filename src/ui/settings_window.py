@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QSlider, QFormLayout, QGroupBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from src.services.base_service import IConfigService, IDatabaseService
+from src.utils.startup_manager import StartupManager
 
 class SettingsWindow(QMainWindow):
     def __init__(self, config_service: IConfigService, db_service: IDatabaseService = None):
@@ -47,20 +48,20 @@ class SettingsWindow(QMainWindow):
         self.chk_save_images = QCheckBox("Save Debug Images")
         self.chk_save_images.setChecked(self.config_service.get("save_debug_images", False))
 
-        self.chk_hdr_mode = QCheckBox("HDR Mode (WGC Capture)")
-        self.chk_hdr_mode.setChecked(self.config_service.get("hdr_mode", False))
-
         self.chk_training_data = QCheckBox("Collect Training Data (Raw)")
         self.chk_training_data.setChecked(self.config_service.get("save_raw_samples", True))
 
         self.chk_auto_hibernate = QCheckBox("Masquer le timer si le jeu n'est pas lancé")
         self.chk_auto_hibernate.setChecked(self.config_service.get("auto_hibernate", True))
+        
+        self.chk_run_at_startup = QCheckBox("Démarrer avec Windows")
+        self.chk_run_at_startup.setChecked(StartupManager.is_enabled())
 
         layout.addRow(self.chk_debug_logs)
         layout.addRow(self.chk_save_images)
-        layout.addRow(self.chk_hdr_mode)
         layout.addRow(self.chk_training_data)
         layout.addRow(self.chk_auto_hibernate)
+        layout.addRow(self.chk_run_at_startup)
 
         self.tabs.addTab(tab, "General")
 
@@ -138,9 +139,14 @@ class SettingsWindow(QMainWindow):
         # Update config service
         self.config_service.set("debug_mode", self.chk_debug_logs.isChecked())
         self.config_service.set("save_debug_images", self.chk_save_images.isChecked())
-        self.config_service.set("hdr_mode", self.chk_hdr_mode.isChecked())
         self.config_service.set("save_raw_samples", self.chk_training_data.isChecked())
         self.config_service.set("auto_hibernate", self.chk_auto_hibernate.isChecked())
+        
+        # Handle Windows startup
+        if self.chk_run_at_startup.isChecked():
+            StartupManager.enable()
+        else:
+            StartupManager.disable()
         
         self.config_service.save()
         self.close()

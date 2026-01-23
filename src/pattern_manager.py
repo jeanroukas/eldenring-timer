@@ -7,7 +7,7 @@ from fuzzywuzzy import fuzz
 from collections import defaultdict
 
 class PatternManager:
-    def __init__(self, filepath="ocr_patterns.json"):
+    def __init__(self, filepath="data/ocr_patterns.json"):
         self.filepath = filepath
         self.lock = threading.RLock()
         self.patterns = {}

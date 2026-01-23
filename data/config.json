@@ -8,7 +8,6 @@
     "tesseract_cmd": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
     "debug_mode": true,
     "save_debug_images": false,
-    "hdr_mode": true,
     "victory_region": {
         "top": 87,
         "left": 263,
@@ -16,6 +15,5 @@
         "height": 93
     },
     "save_raw_samples": false,
-    "use_pil": true,
-    "auto_hibernate": false
+    "auto_hibernate": true
 }

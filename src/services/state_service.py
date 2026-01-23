@@ -15,6 +15,7 @@ try:
 except ImportError:
     keyboard = None
 import psutil
+from src.logger import logger
 
 class StateService(IStateService):
     def __init__(self, config: IConfigService, vision: IVisionService, overlay: IOverlayService, db: IDatabaseService):
@@ -78,6 +79,7 @@ class StateService(IStateService):
         self.victory_check_active = False
         self.last_victory_check = 0
         self.victory_check_interval = 0.5
+        self.victory_detected = False
 
         # Audio state
         self.last_beep_second = -1
@@ -86,7 +88,7 @@ class StateService(IStateService):
         self.last_brightness_log = 0
 
     def initialize(self) -> bool:
-        print("StateService: Initializing...")
+        logger.info("StateService: Initializing...")
         self.running = True
         
         # Subscribe to config changes
@@ -106,7 +108,7 @@ class StateService(IStateService):
                 keyboard.add_hotkey('ctrl+shift+b', self.skip_to_boss)
                 keyboard.add_hotkey('ctrl+shift+r', self.restart_application)
             except Exception as e:
-                print(f"Failed to register hotkeys: {e}")
+                logger.error(f"Failed to register hotkeys: {e}")
 
         # Start background thread for loops
         self.thread = threading.Thread(target=self._run_loops, daemon=True)
@@ -140,7 +142,7 @@ class StateService(IStateService):
                  if should_auto_hibernate:
                      self.schedule(0, self.hibernate)
         except Exception as e:
-            print(f"StateService: check_process_task error: {e}")
+            logger.error(f"StateService: check_process_task error: {e}")
 
     def update_timer_task(self):
         if self.timer_frozen:
@@ -213,23 +215,23 @@ class StateService(IStateService):
                     pass
             return False
         except Exception as e:
-            print(f"StateService: Process check error: {e}")
+            logger.error(f"StateService: Process check error: {e}")
             return False
 
     def wake_up(self):
-        print("Elden Ring detected! Waking up...")
+        logger.info("Elden Ring detected! Waking up...")
         self.is_hibernating = False
         self.overlay.show()
         self.vision.resume_capture()
 
     def hibernate(self):
-        print("Elden Ring closed. Hibernating...")
+        logger.info("Elden Ring closed. Hibernating...")
         self.is_hibernating = True
         self.overlay.hide()
         self.vision.pause_capture()
 
     def on_config_changed(self):
-        print("StateService: Config updated, refreshing parameters...")
+        logger.info("StateService: Config updated, refreshing parameters...")
         # Most parameters are read on-demand from self.config, 
         # but we could force a wake_up/hibernate cycle if needed here.
         pass
@@ -317,16 +319,16 @@ class StateService(IStateService):
                 penalty = self.get_transition_penalty(target_day)
                 score += penalty
                 if penalty != 0 and self.config.get("debug_mode"):
-                    print(f"DEBUG: Soft Guard Penalty for {target_day}: {penalty} (Final Score: {score})")
+                    logger.debug(f"Soft Guard Penalty for {target_day}: {penalty} (Final Score: {score})")
 
             # DEBUG: Print all evaluations
             if self.config.get("debug_mode") and (target_day or score > 40):
-                print(f"DEBUG: Eval '{normalized}' -> {target_day} (Score: {score})")
+                logger.debug(f"Eval '{normalized}' -> {target_day} (Score: {score})")
             
             if target_day and score >= 55:
                 detected_trigger = target_day
                 self.current_matched_pattern = normalized
-                print(f"DEBUG: Trigger Candidate '{normalized}' -> {target_day} (Score: {score})")
+                logger.info(f"Trigger Candidate '{normalized}' -> {target_day} (Score: {score})")
                 
                 if not self.fast_mode_active:
                     self.fast_mode_active = True
@@ -341,7 +343,7 @@ class StateService(IStateService):
 
         if detected_trigger:
             self.trigger_buffer.append((now, detected_trigger, score))
-            print(f"DEBUG: Added to buffer. Buffer size: {len(self.trigger_buffer)}")
+            logger.debug(f"Added to buffer. Buffer size: {len(self.trigger_buffer)}")
 
         if not self.trigger_buffer and not self.fast_mode_active:
              # Exclude Boss 2 (9) and Day 3 Prep (10) from early exit to allow fade detection
@@ -371,7 +373,7 @@ class StateService(IStateService):
         if final_decision and not self.triggered_recently:
             # INSTANT TRIGGER for Day 1 to ensure maximum responsiveness (if it passed consensus)
             if final_decision == "DAY 1" or not self.triggered_recently:
-                print(f"DEBUG: ACTIVATING TRIGGER {final_decision}")
+                logger.info(f"ACTIVATING TRIGGER {final_decision}")
                 self.handle_trigger(final_decision)
                 self.triggered_recently = True
                 self.trigger_buffer = []
@@ -420,7 +422,7 @@ class StateService(IStateService):
         
         # Victory check loop handled separately via `check_victory_loop` 
         # but needs to be triggered.
-        if self.current_phase_index == 11 and not self.victory_check_active:
+        if self.current_phase_index == 11 and not self.victory_check_active and not self.victory_detected:
              self.victory_check_active = True
              self.schedule(int(self.victory_check_interval * 1000), self.check_victory_loop)
 
@@ -448,7 +450,7 @@ class StateService(IStateService):
     def handle_trigger(self, trigger_text: str):
         if self.current_session_id == -1:
              self.current_session_id = self.db.create_session()
-             print(f"StateService: Started Session {self.current_session_id} (Trigger: {trigger_text})")
+             logger.info(f"StateService: Started Session {self.current_session_id} (Trigger: {trigger_text})")
              
         if trigger_text == "DAY 1": self.set_phase_by_name_start("Day 1")
         elif trigger_text == "DAY 2": self.set_phase_by_name_start("Day 2")
@@ -487,6 +489,7 @@ class StateService(IStateService):
         elapsed = time.time() - self.start_time if self.start_time else 0
         if not is_in_day_1 or elapsed > 15:
             if not self.day1_detection_time: self.day1_detection_time = time.time()
+            self.victory_detected = False # Reset for new run
             self.Trigger(0)
 
     def trigger_day_2(self):
@@ -507,25 +510,25 @@ class StateService(IStateService):
 
     def skip_to_boss(self):
         """Skip to the boss of the current day for testing."""
-        print(f"DEBUG: Manual skip requested. Current phase: {self.current_phase_index}")
+        logger.info(f"Manual skip requested. Current phase: {self.current_phase_index}")
         if self.current_phase_index < 4:
             msg = "SKIP: Skipping to Boss 1"
-            print(msg)
+            logger.info(msg)
             self.vision.log_debug(msg)
             self.Trigger(4)
         elif self.current_phase_index < 9:
             msg = "SKIP: Skipping to Boss 2"
-            print(msg)
+            logger.info(msg)
             self.vision.log_debug(msg)
             self.Trigger(9)
         elif self.current_phase_index == 9:
             msg = "SKIP: Skipping to Day 3 Preparation"
-            print(msg)
+            logger.info(msg)
             self.vision.log_debug(msg)
             self.trigger_day_3()
         else:
             msg = "SKIP: Skipping to Final Boss"
-            print(msg)
+            logger.info(msg)
             self.vision.log_debug(msg)
             self.trigger_final_boss()
 
@@ -553,7 +556,7 @@ class StateService(IStateService):
         
         text, score = self.vision.scan_victory_region()
         if text and score >= 60:
-             print(f"VICTORY: {text} ({score})")
+             logger.info(f"VICTORY: {text} ({score})")
              self.stop_timer_victory()
              
              if self.current_session_id != -1:
@@ -564,6 +567,7 @@ class StateService(IStateService):
                  self.vision.save_labeled_sample("VICTORY")
 
              self.victory_check_active = False
+             self.victory_detected = True # Lock victory state until next run
         else:
              self.schedule(int(self.victory_check_interval * 1000), self.check_victory_loop)
 
@@ -588,7 +592,7 @@ class StateService(IStateService):
 
     # --- Manual Feedback ---
     def handle_manual_feedback(self, correct_target):
-        print(f"Manual Feedback: {correct_target}")
+        logger.info(f"Manual Feedback: {correct_target}")
         if not self.triggered_recently:
             self.handle_trigger(correct_target)
             self.triggered_recently = True
@@ -604,7 +608,7 @@ class StateService(IStateService):
         pass
 
     def handle_false_positive(self):
-        print("Manual Feedback: False Positive")
+        logger.info("Manual Feedback: False Positive")
         self.timer_frozen = False
         self.timer_frozen = False
         self.current_phase_index = -1
@@ -623,24 +627,27 @@ class StateService(IStateService):
              except: pass
 
     def restart_application(self):
-        print("RESTART REQUESTED")
+        logger.info("RESTART REQUESTED")
         try:
-            # Determine path to start_background.bat in project root
+            # Determine path to restart.vbs in project root
             # self is in src.services.state_service -> .../src/services/state_service.py
             # root is .../
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            bat_path = os.path.join(project_root, "start_background.bat")
+            vbs_path = os.path.join(project_root, "scripts", "restart.vbs")
             
-            if os.path.exists(bat_path):
-                print(f"Launching {bat_path}...")
-                subprocess.Popen([bat_path], shell=True, cwd=project_root)
-                print("Exiting current process...")
-                time.sleep(0.5)
-                # Ensure clean cleanup if possible, but force exit is needed
-                self.vision.stop_capture()
-                os._exit(0) # Force exit
+            if os.path.exists(vbs_path):
+                logger.info(f"Launching {vbs_path}...")
+                subprocess.Popen(["wscript", vbs_path], shell=False, cwd=project_root)
+                logger.info("Exiting current process...")
+                try:
+                    self.vision.stop_capture()
+                except: pass
+                # Force exit immediately to let the vbs file take over
+                os._exit(0) 
             else:
-                print(f"Error: {bat_path} not found.")
-                winsound.Beep(200, 500)
+                print(f"Error: {vbs_path} not found.")
+                try: winsound.Beep(200, 500)
+                except: pass
         except Exception as e:
-            print(f"Restart failed: {e}")
+            logger.error(f"Restart failed: {e}")
+

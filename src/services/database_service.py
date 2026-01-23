@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional
 from src.services.base_service import IDatabaseService
 
 class DatabaseService(IDatabaseService):
-    def __init__(self, db_path: str = "stats.db"):
+    def __init__(self, db_path: str = "data/stats.db"):
         self.db_path = db_path
         self.connection = None
         

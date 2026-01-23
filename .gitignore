@@ -1,6 +1,4 @@
-samples/
-debug_images/
-tuning_results/
+archive/
 __pycache__/
 *.log
 ocr_log.txt

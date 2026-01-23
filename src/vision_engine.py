@@ -2,20 +2,16 @@
 import cv2
 import numpy as np
 import pytesseract
-import bettercam
 import time
 import os
 import threading
-try:
-    from windows_capture import WindowsCapture
-except ImportError:
-    WindowsCapture = None
 
 import datetime
 import json
 from PIL import ImageGrab
 import re
 from src.utils.tesseract_api import TesseractAPI
+from src.logger import logger
 
 import re
 try:
@@ -36,22 +32,8 @@ class VisionEngine:
         self.region = config.get("monitor_region", {})
         self.scan_delay = 0.2 # Default delay (Standard 5 FPS)
         
-        self.camera = None
-        self.wgc_instance = None
-        self.wgc_control = None
-        self.last_wgc_frame = None
-        self.wgc_lock = threading.Lock()
-        
-        self.wgc_last_frame = None
-        self.wgc_lock = threading.Lock()
-        
-        # Flag for PIL Capture (HDR / GDI Mode)
-        self.use_pil = config.get("use_pil", False)
-        
         self.last_raw_frame = None
         self.last_frame_timestamp = 0
-        
-        self._init_camera()
 
         # Initial parameter sync
         self.update_from_config()
@@ -133,16 +115,8 @@ class VisionEngine:
             self.tess_api = None
 
     def update_config(self, new_config):
-        """Updates configuration and re-initializes engine if capture mode changed."""
-        old_hdr = self.config.get("hdr_mode", False)
-        old_pil = self.use_pil
-        
+        """Updates configuration."""
         self.config = new_config
-        self.use_pil = self.config.get("use_pil", False)
-        
-        if (self.config.get("hdr_mode", False) != old_hdr) or (self.use_pil != old_pil):
-            print(f"Vision Engine: Capture Mode switched (HDR: {self.config.get('hdr_mode')}, PIL: {self.use_pil}). Re-initializing...")
-            self._init_camera()
 
     def get_monitors(self):
         """Returns a list of all monitors with their global coordinates."""
@@ -177,7 +151,6 @@ class VisionEngine:
 
     def update_from_config(self):
         """Refreshes parameters that can be changed at runtime."""
-        self.use_pil = self.config.get("use_pil", self.use_pil)
         
         # Configure Tesseract path
         tesseract_cmd = self.config.get("tesseract_cmd", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
@@ -369,12 +342,6 @@ class VisionEngine:
 
     def stop(self):
         self.running = False
-        if self.camera:
-            try: self.camera.stop()
-            except: pass
-        if self.wgc_control:
-            try: self.wgc_control.stop()
-            except: pass
 
     def pause(self):
         self.paused = True
@@ -385,7 +352,7 @@ class VisionEngine:
         print("Vision Engine: Resumed")
         
     def capture_screen(self):
-        """Captures the current region using the active engine."""
+        """Captures the current region using PIL ImageGrab."""
         try:
             # Check for override, otherwise use config region
             reg = getattr(self, 'region_override', None)
@@ -394,47 +361,28 @@ class VisionEngine:
             
             if not reg: return None
 
-            if self.use_pil or not self.camera:
-                 # Legacy / Fallback Capture (GDI)
-                 # Mimic timer.py behavior: Capture Primary Screen + Dynamic Center Crop
-                 try:
-                     full_img = ImageGrab.grab() # Primary Screen Only
-                     
-                     # Dynamic Center Crop (Matches timer.py)
-                     w, h = full_img.size
-                     left = int(w * 0.35)
-                     top = int(h * 0.50)
-                     width = int(w * 0.65) - left   # right is 0.65*w
-                     height = int(h * 0.65) - top   # bottom is 0.65*h
-                     
-                     if full_img:
-                         cropped = full_img.crop((left, top, left+width, top+height))
-                         # Convert PIL to OpenCv (RGB -> BGR)
-                         img_np = np.array(cropped)
-                         return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-                 except Exception as e:
-                     print(f"PIL Capture failed: {e}")
-                     return None
-
-            if self.camera:
-                # Check if we need to re-init camera for new region (Only if region changed and we are not in HDR/WGC mode)
-                # This causes a slight lag frame but is necessary for BetterCam dynamic region
-                # Note: current_cam_region check logic was missing in previous view, assuming implied or I should just call grab.
+            # PIL Capture (always used)
+            try:
+                full_img = ImageGrab.grab() # Primary Screen Only
                 
-                frame = self.camera.grab()
-                if frame is not None:
-                    # bettercam returns RGB, OpenCV usually wants BGR
-                    img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                if reg:
+                    left = reg.get('left', 0)
+                    top = reg.get('top', 0)
+                    width = reg.get('width', 100)
+                    height = reg.get('height', 100)
+                    crop_box = (left, top, left + width, top + height)
+                    cropped = full_img.crop(crop_box)
+                else:
+                    # Fallback if no region (should not happen)
+                    cropped = full_img
                     
-                    # Apply HDR Gamma Correction if needed
-                    # Only apply if NOT using PIL (since PIL tone maps differently)
-                    if self.config.get("hdr_mode") and not self.use_pil:
-                        # HDR captures often look washed out (linear space) or bright.
-                        # Gamma < 1.0 (e.g. 0.5) darkens midtones/highlights -> recovers texture in whites.
-                        img = self.adjust_gamma(img, gamma=0.5) 
-                        
-                    return img
-            return None
+                # Convert PIL to OpenCV (RGB -> BGR)
+                img_np = np.array(cropped)
+                return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            except Exception as e:
+                print(f"PIL Capture failed: {e}")
+                return None
+
         except Exception as e:
             print(f"Capture error: {e}")
             return None
@@ -833,18 +781,11 @@ class VisionEngine:
                 if self.config.get("debug_mode"):
                     if best_text:
                          # Log result
-                         ts = datetime.datetime.now().strftime("%H:%M:%S")
-                         # Include score and duration in logs
                          duration_ms = (time.perf_counter() - loop_start) * 1000
-                         log_msg = f"[{ts}] OCR: '{best_text}' (Filter: {self.is_relevant(best_text)}, Score: {int(best_conf)}) Br:{brightness:.1f} Dur:{duration_ms:.0f}ms\n"
-                         print(log_msg.strip())
-                         try:
-                             with open(os.path.join(self.project_root, "ocr_log.txt"), "a", encoding='utf-8') as f:
-                                 f.write(log_msg)
-                         except: pass
+                         logger.debug(f"OCR: '{best_text}' (Filter: {self.is_relevant(best_text)}, Score: {int(best_conf)}) Br:{brightness:.1f} Dur:{duration_ms:.0f}ms")
                     elif self.frame_count % 50 == 0:
                          # Heartbeat
-                         print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Heartbeat - Brightness: {brightness:.1f}")
+                         logger.debug(f"Heartbeat - Brightness: {brightness:.1f}")
                 
                 # Callback now expects (text, width, center_offset, word_data, brightness, score)
                 callback(best_text, best_width, best_center_offset, best_word_data, brightness, best_conf)
@@ -860,14 +801,8 @@ class VisionEngine:
                 time.sleep(1)
 
     def log_debug(self, message: str) -> None:
-        """Allow other services to log into ocr_log.txt"""
-        ts = datetime.datetime.now().strftime("%H:%M:%S")
-        log_msg = f"[{ts}] {message}\n"
-        print(log_msg.strip())
-        try:
-            with open(os.path.join(self.project_root, "ocr_log.txt"), "a", encoding='utf-8') as f:
-                f.write(log_msg)
-        except: pass
+        """Allow other services to log via unified logger"""
+        logger.debug(message)
 
     def save_labeled_sample(self, label: str):
         """

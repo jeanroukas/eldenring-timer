@@ -4,7 +4,7 @@ from typing import Any, Callable
 from src.services.base_service import IConfigService
 
 class ConfigService(IConfigService):
-    def __init__(self, config_path: str = "config.json"):
+    def __init__(self, config_path: str = "data/config.json"):
         self.config_path = config_path
         self._config = {}
         self._observers = []
