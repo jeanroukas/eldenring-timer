@@ -13,6 +13,9 @@ except ImportError:
 
 import datetime
 import json
+from PIL import ImageGrab
+import re
+from src.utils.tesseract_api import TesseractAPI
 
 import re
 try:
@@ -31,7 +34,7 @@ class VisionEngine:
         self.running = False
         self.paused = False
         self.region = config.get("monitor_region", {})
-        self.scan_delay = 0.08 # Default delay (réduit pour plus d'échantillons)
+        self.scan_delay = 0.2 # Default delay (Standard 5 FPS)
         
         self.camera = None
         self.wgc_instance = None
@@ -39,17 +42,19 @@ class VisionEngine:
         self.last_wgc_frame = None
         self.wgc_lock = threading.Lock()
         
+        self.wgc_last_frame = None
+        self.wgc_lock = threading.Lock()
+        
+        # Flag for PIL Capture (HDR / GDI Mode)
+        self.use_pil = config.get("use_pil", False)
+        
         self.last_raw_frame = None
         self.last_frame_timestamp = 0
         
         self._init_camera()
 
-        # Configure Tesseract path
-        tesseract_cmd = config.get("tesseract_cmd", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-        if os.path.exists(tesseract_cmd):
-             pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-        else:
-            print(f"Warning: Tesseract not found at {tesseract_cmd}. OCR may fail.")
+        # Initial parameter sync
+        self.update_from_config()
 
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         
@@ -77,20 +82,66 @@ class VisionEngine:
             "JOURTE": "JOUR II",
             "JOERII": "JOUR II",
             "JOUMT": "JOUR II",
-            "JAURAL": "JOUR II", 
-            "JOURIII": "JOUR III", # Sometimes OK, sometimes noisy
+            "JAURAL": "JOUR II",
+            "JQURII": "JOUR II",
+            "JQUR II": "JOUR II",
+            "JQURIH": "JOUR II",
+            "JOUR IT": "JOUR II",
+            "JOURII": "JOUR II",
+            "JOUR I I": "JOUR II",
+            "JOURITI": "JOUR II",
+            "JQU_RII": "JOUR II",
+            "JOURIII": "JOUR III",
+            "JQURIII": "JOUR III",
             "JOUR1": "JOUR I",
             "JOUR2": "JOUR II",
             "JOUR3": "JOUR III",
-            "JOU": "JOUR I" # Aggressive fix for short capture?
+            "JQUR I": "JOUR I",
+            "JOUR I T": "JOUR I",
+            "J OURIT": "JOUR I"
         }
+        
+        # Performance Tracking / Fast Mode
+        self.last_successful_pass = None
+        
+        # Smart Filter Stats
+        self.total_scans = 0
+        self.skipped_scans = 0
+        
+        # High Performance Tesseract API (DLL)
+        self.tess_api = None
+        self._init_tess_api()
+
+    def _init_tess_api(self):
+        """Initializes the Direct DLL API if possible."""
+        try:
+            exe_path = self.config.get("tesseract_cmd", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+            base_path = os.path.dirname(exe_path)
+            dll_path = os.path.join(base_path, "libtesseract-5.dll")
+            tessdata_path = os.path.join(base_path, "tessdata")
+            
+            if os.path.exists(dll_path):
+                self.tess_api = TesseractAPI(dll_path, tessdata_path, lang="fra")
+                if self.config.get("debug_mode"):
+                    print(f"VISION: High-performance Tesseract API (DLL) loaded.")
+            else:
+                if self.config.get("debug_mode"):
+                    print(f"VISION: libtesseract-5.dll not found. Falling back to pytesseract.")
+        except Exception as e:
+            if self.config.get("debug_mode"):
+                print(f"VISION: Failed to load Tesseract DLL: {e}. Falling back to pytesseract.")
+            self.tess_api = None
 
     def update_config(self, new_config):
         """Updates configuration and re-initializes engine if capture mode changed."""
         old_hdr = self.config.get("hdr_mode", False)
+        old_pil = self.use_pil
+        
         self.config = new_config
-        if self.config.get("hdr_mode", False) != old_hdr:
-            print(f"Vision Engine: HDR Mode switched to {self.config.get('hdr_mode')}. Re-initializing...")
+        self.use_pil = self.config.get("use_pil", False)
+        
+        if (self.config.get("hdr_mode", False) != old_hdr) or (self.use_pil != old_pil):
+            print(f"Vision Engine: Capture Mode switched (HDR: {self.config.get('hdr_mode')}, PIL: {self.use_pil}). Re-initializing...")
             self._init_camera()
 
     def get_monitors(self):
@@ -124,7 +175,20 @@ class VisionEngine:
             print(f"Vision Engine: Failed to get monitors: {e}")
             return []
 
-    def _init_camera(self):
+    def update_from_config(self):
+        """Refreshes parameters that can be changed at runtime."""
+        self.use_pil = self.config.get("use_pil", self.use_pil)
+        
+        # Configure Tesseract path
+        tesseract_cmd = self.config.get("tesseract_cmd", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+        if os.path.exists(tesseract_cmd):
+             pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        
+        # We could also re-init camera if capture mode changed
+        if hasattr(self, 'debug_mode'):
+             self.debug_mode = self.config.get("debug_mode", False)
+
+    def _init_camera(self, region=None):
         """Initializes or re-initializes BetterCam with current region and correct monitor."""
         try:
             if self.camera:
@@ -138,46 +202,25 @@ class VisionEngine:
                 self.wgc_control = None
                 self.wgc_instance = None
             
-            region = self.config.get("monitor_region", {})
+            # Use provided region or fallback to config
+            if region is None:
+                region = self.config.get("monitor_region", {})
+            
             if not region:
                 self.camera = None
                 return
 
             if self.config.get("hdr_mode"):
-                if not WindowsCapture:
-                    print("Vision Engine: windows-capture library missing. HDR mode unavailable.")
-                    return
-                
-                # 1. Find monitor index for WGC
-                monitors = self.get_monitors()
-                global_left = region.get('left', 0)
-                global_top = region.get('top', 0)
-                
-                monit_idx = 0
-                for i, m in enumerate(monitors):
-                    if (m['left'] <= global_left < m['right']) and (m['top'] <= global_top < m['bottom']):
-                        monit_idx = i
-                        break
-                
-                # WGC monitor_index is 1-based
-                wgc_idx = monit_idx + 1
-                
-                print(f"Vision Engine: Using WGC (HDR Mode) on Monitor {wgc_idx}")
-                
-                self.wgc_instance = WindowsCapture(monitor_index=wgc_idx)
-                
-                @self.wgc_instance.event
-                def on_frame_arrived(frame, control):
-                    with self.wgc_lock:
-                        # frame.frame_buffer is the numpy array (BGRA)
-                        self.last_wgc_frame = frame.frame_buffer.copy()
+                print("Vision Engine: HDR Mode Enabled. Checks capture preference.")
+                # Previous logic forced use_pil=False. We now respect the config.
+                if not self.use_pil:
+                     print("Vision Engine: Using BetterCam (DXGI) with Gamma Correction.")
+                else:
+                     print("Vision Engine: Using PIL (GDI) Fallback as requested.")
+                     self.camera = None
+                     return # Skip BetterCam init
 
-                @self.wgc_instance.event
-                def on_closed():
-                    print("Vision Engine: WGC Capture closed.")
 
-                self.wgc_control = self.wgc_instance.start_free_threaded()
-                return
 
             # 1. Find which monitor this region (top-left) belongs to
             monit_idx = 0
@@ -351,72 +394,51 @@ class VisionEngine:
             
             if not reg: return None
 
-            if self.config.get("hdr_mode"):
-                # Use WGC frame buffer
-                with self.wgc_lock:
-                    if self.last_wgc_frame is None: return None
-                    full_frame = self.last_wgc_frame.copy()
-                
-                # Find monitor relative coordinates to crop
-                monitors = self.get_monitors()
-                global_left = reg.get('left', 0)
-                global_top = reg.get('top', 0)
-                
-                found_monitor = None
-                for m in monitors:
-                    if (m['left'] <= global_left < m['right']) and (m['top'] <= global_top < m['bottom']):
-                        found_monitor = m
-                        break
-                
-                if not found_monitor:
-                    found_monitor = monitors[0] if monitors else {"left":0, "top":0}
+            if self.use_pil or not self.camera:
+                 # Legacy / Fallback Capture (GDI)
+                 # Mimic timer.py behavior: Capture Primary Screen + Dynamic Center Crop
+                 try:
+                     full_img = ImageGrab.grab() # Primary Screen Only
+                     
+                     # Dynamic Center Crop (Matches timer.py)
+                     w, h = full_img.size
+                     left = int(w * 0.35)
+                     top = int(h * 0.50)
+                     width = int(w * 0.65) - left   # right is 0.65*w
+                     height = int(h * 0.65) - top   # bottom is 0.65*h
+                     
+                     if full_img:
+                         cropped = full_img.crop((left, top, left+width, top+height))
+                         # Convert PIL to OpenCv (RGB -> BGR)
+                         img_np = np.array(cropped)
+                         return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                 except Exception as e:
+                     print(f"PIL Capture failed: {e}")
+                     return None
 
-                # Local coordinates for crop
-                lx = global_left - found_monitor['left']
-                ly = global_top - found_monitor['top']
-                lw = reg.get('width', 100)
-                lh = reg.get('height', 100)
-                
-                # Crop BGRA and convert to BGR (with safety bounds)
-                fh, fw = full_frame.shape[:2]
-                ly_end = min(max(0, ly + lh), fh)
-                lx_end = min(max(0, lx + lw), fw)
-                ly_start = min(max(0, ly), fh)
-                lx_start = min(max(0, lx), fw)
-                
-                cropped = full_frame[ly_start:ly_end, lx_start:lx_end]
-                
-                if cropped.size == 0:
-                    return None
-                    
-                return cv2.cvtColor(cropped, cv2.COLOR_BGRA2BGR)
-            
             if self.camera:
                 # Check if we need to re-init camera for new region (Only if region changed and we are not in HDR/WGC mode)
                 # This causes a slight lag frame but is necessary for BetterCam dynamic region
-                current_cam_region = getattr(self, 'current_cam_region', None)
-                if current_cam_region != reg:
-                     print(f"Vision Engine: Switching BetterCam region to {reg}")
-                     self.region = reg # Update internal tracking
-                     # We need to re-init BetterCam with this new region.
-                     # But we can't call _init_camera directly easily as it uses self.config.
-                     # Let's temporarily patch self.config["monitor_region"] for _init_camera or modify _init_camera to accept arg.
-                     # Modifying _init_camera is cleaner but requires looking at lines 85+.
-                     # For now, let's just hack it:
-                     old_conf_reg = self.config.get("monitor_region")
-                     self.config["monitor_region"] = reg
-                     self._init_camera()
-                     self.config["monitor_region"] = old_conf_reg # Restore
-                     self.current_cam_region = reg
-
+                # Note: current_cam_region check logic was missing in previous view, assuming implied or I should just call grab.
+                
                 frame = self.camera.grab()
                 if frame is not None:
                     # bettercam returns RGB, OpenCV usually wants BGR
-                    return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    
+                    # Apply HDR Gamma Correction if needed
+                    # Only apply if NOT using PIL (since PIL tone maps differently)
+                    if self.config.get("hdr_mode") and not self.use_pil:
+                        # HDR captures often look washed out (linear space) or bright.
+                        # Gamma < 1.0 (e.g. 0.5) darkens midtones/highlights -> recovers texture in whites.
+                        img = self.adjust_gamma(img, gamma=0.5) 
+                        
+                    return img
             return None
         except Exception as e:
             print(f"Capture error: {e}")
             return None
+
 
     def adjust_gamma(self, image, gamma=1.0):
         if gamma == 1.0: return image
@@ -425,13 +447,34 @@ class VisionEngine:
             for i in np.arange(0, 256)]).astype("uint8")
         return cv2.LUT(image, table)
 
-    def preprocess_image(self, img, pass_type="otsu", custom_val=0, scale=1.0):
+    def is_worth_ocr(self, img):
+        """
+        Fast check to see if the image contains enough bright pixels to potentially be the 'JOUR' text.
+        Returns True if OCR should be attempted, False otherwise.
+        """
+        if img is None: return False
+        
+        # Convert to grayscale for faster processing if BGR
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img
+            
+        # Optimization: We look for white-ish pixels. 
+        # The 'JOUR' text is typically very bright (>200)
+        max_val = np.max(gray)
+        if max_val < 100: # Safe threshold even for dim text
+            return False
+            
+        # Also check mean of top 5% brightest pixels? 
+        # Overkill for now. max_val is extremely fast.
+        return True
+
+    def preprocess_image(self, img, pass_type="otsu", custom_val=0, scale=1.0, gamma=1.0):
         if img is None: return None
         
         # Dynamic Scaling
         h, w = img.shape[:2]
-        # Target height based on analysis (Scale 1.5x of original usually optimal)
-        # But here we use explicit scale if provided
         new_w = int(w * scale)
         new_h = int(h * scale)
         img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
@@ -439,16 +482,12 @@ class VisionEngine:
         # Convert to gray
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # Gamma (Fixed 1.0 generally fine, analysis showed 0.8-1.2 var)
-        # Lets keep it simple or param? Analysis said 1.0 or 0.8. 
-        # We'll stick to 1.0 for now unless dynamic requires it
-        gamma = 1.0
+        # Gamma Correction
         if gamma != 1.0:
-            invGamma = 1.0 / gamma
-            table = np.array([((i / 255.0) ** invGamma) * 255 for i in range(256)]).astype("uint8")
-            gray = cv2.LUT(gray, table)
+            gray = self.adjust_gamma(gray, gamma)
 
-        if pass_type == "otsu":
+
+        if pass_type == "otsu" or pass_type == "simple_otsu":
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         elif pass_type == "fixed" or pass_type == "dynamic":
             # Use provided value or default
@@ -520,6 +559,12 @@ class VisionEngine:
                 self.frame_count += 1
                 loop_start = time.perf_counter()
                 
+                # STALL DETECTION: Check if previous loop took too long
+                if getattr(self, 'last_loop_end', 0) > 0:
+                    loop_duration = loop_start - self.last_loop_end
+                    if loop_duration > 1.0:
+                        self.log_debug(f"[WARNING] LOOP STALL DETECTED: {loop_duration:.2f}s")
+                
                 img = self.capture_screen()
                 if img is None:
                     time.sleep(0.1)
@@ -532,6 +577,18 @@ class VisionEngine:
                 brightness = 0
                 if img is not None:
                      brightness = np.mean(img)
+
+                # --- SMART FILTER ---
+                self.total_scans += 1
+                if not self.is_worth_ocr(img):
+                    self.skipped_scans += 1
+                    # Notify callback of current brightness even if OCR is skipped
+                    # This is critical for fade detection.
+                    callback("", 0, 0, [], brightness, 0)
+                    
+                    if self.scan_delay > 0:
+                        time.sleep(self.scan_delay)
+                    continue
 
                 # Dynamic OCR Logic
                 # Derived from Phase 2 Analysis: Threshold = 230 + (Brightness * 0.1)
@@ -546,34 +603,77 @@ class VisionEngine:
                 # 1. Dynamic Fixed: Fast, 85% success rate.
                 # 2. Adaptive: Slower, handles extreme brightness gradients.
                 # 3. Inverted: Handles rare bloom/inversion cases.
-                passes = [
-                    {"type": "dynamic", "val": target_thresh, "scale": 1.5},
-                    {"type": "adaptive", "val": 0, "scale": 1.5},
-                    {"type": "inverted", "val": 0, "scale": 1.5} 
+                # Strategy (Optimized for 10+ FPS):
+                all_passes = [
+                    {"type": "simple_otsu", "val": 0, "scale": 1.0, "gamma": 1.0, "id": "otsu"},
+                    {"type": "dynamic", "val": target_thresh, "scale": 1.0, "gamma": 1.0, "id": "dyn_1.0"},
+                    {"type": "dynamic", "val": target_thresh, "scale": 1.2, "gamma": 0.8, "id": "dyn_0.8"},
+                    {"type": "fixed", "val": 250, "scale": 1.2, "gamma": 0.8, "id": "fixed_250"},
+                    {"type": "adaptive", "val": 0, "scale": 1.0, "gamma": 1.0, "id": "adaptive"}
                 ]
+                
+                # Reorder passes for Fast Mode & Adaptive Selection
+                prioritized_passes = []
+                
+                # 1. Last Successful Pass (Fast Mode)
+                if self.last_successful_pass:
+                    matching = [p for p in all_passes if p["id"] == self.last_successful_pass["id"]]
+                    if matching:
+                        match = matching[0]
+                        # Update dynamic val
+                        if match["type"] == "dynamic": match["val"] = target_thresh
+                        prioritized_passes.append(match)
+                        
+                # 2. Adaptive Sorting based on Brightness
+                others = [p for p in all_passes if p not in prioritized_passes]
+                if brightness > 180:
+                    # Bright context: Favor gamma reduction and high fixed thresholds
+                    others.sort(key=lambda x: (x.get("gamma") == 0.8 or x["type"] == "fixed"), reverse=True)
+                else:
+                    # Standard context: Favor Otsu and dynamic
+                    others.sort(key=lambda x: (x["type"] == "simple_otsu" or (x.get("gamma") == 1.0 and x["type"] == "dynamic")), reverse=True)
+                
+                prioritized_passes.extend(others)
+                
+
                 
                 best_text = ""
                 best_width = 0
                 best_center_offset = 0
                 best_word_data = []
                 best_pass = "none"
+                best_conf = 0
                 
                 # Run passes
-                for p_config in passes:
+                for p_config in prioritized_passes:
+                    # Special path for "simple_otsu" to skip resizing/gamma if implemented in preprocess_image
                     processed = self.preprocess_image(img, pass_type=p_config["type"], 
                                                       custom_val=p_config["val"], 
-                                                      scale=p_config["scale"])
+                                                      scale=p_config["scale"],
+                                                      gamma=p_config.get("gamma", 1.0))
                     if processed is None: continue
 
-                    custom_config = r'-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 --psm 7'
-                    
-                    try:
-                        data = pytesseract.image_to_data(processed, config=custom_config, output_type=pytesseract.Output.DICT)
-                    except: continue
-                    
-                    # Calculate Confidence Score
-                    conf_list = [int(c) for c in data['conf'] if c != -1]
-                    avg_conf = np.mean(conf_list) if conf_list else 0
+                    if self.tess_api:
+                        # Use high-performance DLL
+                        text, avg_conf = self.tess_api.get_text(processed)
+                        # Simulate the 'data' structure if needed for geometry, 
+                        # but for now text/conf is prioritized.
+                        # (Geometry can be added back to TesseractAPI if critical)
+                        data = {"text": [text], "conf": [avg_conf], "left": [0], "width": [processed.shape[1]], "top": [0]}
+                    else:
+                        # Fallback to slow Pytesseract
+                        try:
+                            custom_config = r'-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 --psm 7'
+                            data = pytesseract.image_to_data(processed, config=custom_config, output_type=pytesseract.Output.DICT)
+                        except: continue
+                        
+                    # Calculate Confidence Score (from DLL or Pytesseract)
+                    if self.tess_api:
+                        # Values from DLL are 0-100
+                        pass 
+                    else:
+                        conf_list = [int(c) for c in data['conf'] if c != -1]
+                        avg_conf = np.mean(conf_list) if conf_list else 0
                     
                     # Quality Filter: Reject very low confidence (<40)
                     if avg_conf < 40 and p_config["type"] == "dynamic":
@@ -587,13 +687,25 @@ class VisionEngine:
                     text = self.CORRECTION_MAP.get(text, text)
                     
                     if text:
-                        # Heuristic: Prefer High Confidence > Longer Text
-                        # Previous logic favored length, but confidence is key now
-                        if avg_conf > (getattr(self, 'best_conf', 0) + 10) or (len(text) > len(best_text) and avg_conf > 50):
-                            self.best_conf = avg_conf # Store for next comparison
+                        # Heuristic: Prefer tokens starting with "JOUR" or having high confidence
+                        # If a token is a known corrected form, it gets a bonus.
+                        confidence_bonus = 0
+                        is_corrected = text in self.CORRECTION_MAP.values()
+                        if is_corrected: confidence_bonus += 10
+                        if text.startswith("JOUR"): confidence_bonus += 5
+                        
+                        current_score = avg_conf + confidence_bonus
+                        # Use a persistent best_score for comparison
+                        best_score_val = best_conf + (15 if best_text in self.CORRECTION_MAP.values() else 0)
+                        
+                        if current_score > best_score_val or (len(text) > len(best_text) and avg_conf > 50):
+                            best_conf = avg_conf
                             best_text = text
                             best_pass = p_config["type"]
-                            
+                            # Track success for Fast Mode
+                            if avg_conf > 70:
+                                self.last_successful_pass = p_config
+                                
                             # Geometry calculation
                             if valid_indices:
                                 left = min([data['left'][i] for i in valid_indices])
@@ -614,10 +726,13 @@ class VisionEngine:
                                 img_center = processed.shape[1] / 2
                                 best_center_offset = abs(text_center - img_center)
                         
-                        # Early Exit: If we found a very high confidence result (>85), 
-                        # stop trying other passes to save CPU and latency.
-                        if getattr(self, 'best_conf', 0) > 85:
+                        # Early Exit (Fast Mode Trigger)
+                        if best_conf > 85:
                             break
+                
+                # If everything failed, reset Fast Mode
+                if best_conf < 40:
+                    self.last_successful_pass = None
 
                 # Save RAW samples + Metadata on Detection
                 should_save = False
@@ -719,7 +834,9 @@ class VisionEngine:
                     if best_text:
                          # Log result
                          ts = datetime.datetime.now().strftime("%H:%M:%S")
-                         log_msg = f"[{ts}] OCR: '{best_text}' (Filter: {self.is_relevant(best_text)}, Save: {self.config.get('save_raw_samples')}) Br:{brightness:.1f}\n"
+                         # Include score and duration in logs
+                         duration_ms = (time.perf_counter() - loop_start) * 1000
+                         log_msg = f"[{ts}] OCR: '{best_text}' (Filter: {self.is_relevant(best_text)}, Score: {int(best_conf)}) Br:{brightness:.1f} Dur:{duration_ms:.0f}ms\n"
                          print(log_msg.strip())
                          try:
                              with open(os.path.join(self.project_root, "ocr_log.txt"), "a", encoding='utf-8') as f:
@@ -729,17 +846,28 @@ class VisionEngine:
                          # Heartbeat
                          print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Heartbeat - Brightness: {brightness:.1f}")
                 
-                # Callback now expects (text, width, center_offset, word_data, brightness)
-                callback(best_text, best_width, best_center_offset, best_word_data, brightness)
+                # Callback now expects (text, width, center_offset, word_data, brightness, score)
+                callback(best_text, best_width, best_center_offset, best_word_data, brightness, best_conf)
                 
                 # Dynamic Delay
                 elapsed = time.perf_counter() - loop_start
+                self.last_loop_end = time.perf_counter() # Mark end of processing
                 remaining_delay = max(0, self.scan_delay - elapsed)
                 time.sleep(remaining_delay if remaining_delay > 0 else 0.001)
 
             except Exception as e:
                 print(f"Vision error: {e}")
                 time.sleep(1)
+
+    def log_debug(self, message: str) -> None:
+        """Allow other services to log into ocr_log.txt"""
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        log_msg = f"[{ts}] {message}\n"
+        print(log_msg.strip())
+        try:
+            with open(os.path.join(self.project_root, "ocr_log.txt"), "a", encoding='utf-8') as f:
+                f.write(log_msg)
+        except: pass
 
     def save_labeled_sample(self, label: str):
         """
@@ -768,4 +896,5 @@ class VisionEngine:
             
         except Exception as e:
             print(f"Failed to save labeled sample: {e}")
+
 

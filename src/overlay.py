@@ -62,6 +62,7 @@ class Overlay:
         self.is_recording = False # New state for recording indicator
         self.last_beep_second = -1 # Track last beep to avoid duplicate beeps in same second
         self.frozen = False # Victory/stopped state
+        self.current_score = 0 # Latest OCR score
 
         self.setup_menu()
         
@@ -197,9 +198,21 @@ class Overlay:
         # Draw Main Text
         self.canvas.create_text(x, y, text=text, font=font_spec, fill="white", anchor="e")
 
+        # Draw Score (Small text below)
+        if self.current_score > 0:
+            score_text = f"Accuracy: {int(self.current_score)}%"
+            score_font = ("Helvetica", 10, "bold")
+            # Draw score outline
+            for ox, oy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                self.canvas.create_text(x+ox, y+40+oy, text=score_text, font=score_font, fill="black", anchor="e")
+            # Draw score text
+            self.canvas.create_text(x, y+40, text=score_text, font=score_font, fill="#AAAAAA", anchor="e")
+
     def show_recording(self, show: bool):
         self.is_recording = show
-        # Force immediate update if needed, but update_timer loop handles it properly usually
+
+    def set_ocr_score(self, score: float):
+        self.current_score = score
 
     def update_timer(self):
         # Check if timer is frozen (victory/failure state)

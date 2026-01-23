@@ -3,12 +3,13 @@ import argparse
 import ctypes
 from PyQt6.QtWidgets import QApplication
 from src.service_container import ServiceContainer
-from src.services.base_service import IConfigService, IVisionService, IOverlayService, IStateService, IDatabaseService
+from src.services.base_service import IConfigService, IVisionService, IOverlayService, IStateService, IDatabaseService, ITrayService
 from src.services.config_service import ConfigService
 from src.services.vision_service import VisionService
 from src.services.overlay_service import OverlayService
 from src.services.state_service import StateService
 from src.services.database_service import DatabaseService
+from src.services.tray_service import TrayService
 from src.region_selector import RegionSelector
 from src.ui.settings_window import SettingsWindow
 
@@ -25,7 +26,7 @@ class Launcher:
     def __init__(self):
         # Singleton Check
         kernel32 = ctypes.windll.kernel32
-        mutex_name = "Global\\EldenRingNightreignTimerMutex"
+        mutex_name = "Global\\EldenRingNightreignTimerMutex_V2"
         self.mutex = kernel32.CreateMutexW(None, False, mutex_name)
         if kernel32.GetLastError() == 183:
             print("Another instance is already running. Exiting.")
@@ -33,6 +34,7 @@ class Launcher:
 
         # Qt Application
         self.app = QApplication(sys.argv)
+        self.app.setQuitOnLastWindowClosed(False)
         
         self.container = ServiceContainer()
         self.setup_services()
@@ -59,6 +61,10 @@ class Launcher:
         # 5. State
         self.state_service = StateService(self.config_service, self.vision_service, self.overlay_service, self.db_service)
         self.container.register(IStateService, self.state_service)
+
+        # 6. Tray (System Icon)
+        self.tray_service = TrayService(self)
+        self.container.register(ITrayService, self.tray_service)
 
     def run(self):
         parser = argparse.ArgumentParser()

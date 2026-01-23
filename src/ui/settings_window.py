@@ -53,10 +53,14 @@ class SettingsWindow(QMainWindow):
         self.chk_training_data = QCheckBox("Collect Training Data (Raw)")
         self.chk_training_data.setChecked(self.config_service.get("save_raw_samples", True))
 
+        self.chk_auto_hibernate = QCheckBox("Masquer le timer si le jeu n'est pas lancé")
+        self.chk_auto_hibernate.setChecked(self.config_service.get("auto_hibernate", True))
+
         layout.addRow(self.chk_debug_logs)
         layout.addRow(self.chk_save_images)
         layout.addRow(self.chk_hdr_mode)
         layout.addRow(self.chk_training_data)
+        layout.addRow(self.chk_auto_hibernate)
 
         self.tabs.addTab(tab, "General")
 
@@ -136,6 +140,7 @@ class SettingsWindow(QMainWindow):
         self.config_service.set("save_debug_images", self.chk_save_images.isChecked())
         self.config_service.set("hdr_mode", self.chk_hdr_mode.isChecked())
         self.config_service.set("save_raw_samples", self.chk_training_data.isChecked())
+        self.config_service.set("auto_hibernate", self.chk_auto_hibernate.isChecked())
         
         self.config_service.save()
         self.close()

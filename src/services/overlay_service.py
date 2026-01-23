@@ -21,7 +21,7 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
 
     def initialize(self) -> bool:
         self.create_overlay()
-        self.overlay.hide()
+        # self.overlay.hide() # REMOVED: Start visible by default
         return True
 
     def shutdown(self) -> None:
@@ -61,6 +61,10 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
         # Qt 6.x supports this via setWindowFlags or setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         if self.overlay:
             self.overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
+
+    def set_ocr_score(self, score: float) -> None:
+        if self.overlay:
+            self.overlay.set_score(score)
 
     def schedule(self, delay_ms: int, callback: Callable) -> None:
         """Schedule a callback on the UI thread."""

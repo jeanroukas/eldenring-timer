@@ -14,3 +14,4 @@ bettercam
 fuzzywuzzy
 python-Levenshtein
 PyQt6
+winsdk

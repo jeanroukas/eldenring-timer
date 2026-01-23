@@ -27,6 +27,11 @@ class IConfigService(IService):
     def save(self) -> bool:
         pass
 
+    @abstractmethod
+    def add_observer(self, callback: Callable[[], None]) -> None:
+        """Register a callback to be notified of config changes."""
+        pass
+
 class IVisionService(IService):
     """Interface for vision and OCR operations."""
     @abstractmethod
@@ -51,6 +56,11 @@ class IVisionService(IService):
         """Saves the current frame as a training sample for the given label."""
         pass
 
+    @abstractmethod
+    def log_debug(self, message: str) -> None:
+        """Logs a message to the OCR debug log."""
+        pass
+
 class IOverlayService(IService):
     """Interface for the UI overlay."""
     @abstractmethod
@@ -71,6 +81,10 @@ class IOverlayService(IService):
 
     @abstractmethod
     def set_click_through(self, enabled: bool) -> None:
+        pass
+
+    @abstractmethod
+    def set_ocr_score(self, score: float) -> None:
         pass
 
 class IStateService(IService):
@@ -103,5 +117,15 @@ class IDatabaseService(IService):
     @abstractmethod
     def get_stats(self) -> Dict[str, Any]:
         """Returns aggregated statistics."""
+        pass
+
+class ITrayService(IService):
+    """Interface for system tray icon and menu."""
+    @abstractmethod
+    def set_tooltip(self, text: str) -> None:
+        pass
+
+    @abstractmethod
+    def show_message(self, title: str, message: str) -> None:
         pass
 

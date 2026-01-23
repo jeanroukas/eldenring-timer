@@ -21,6 +21,7 @@ class ModernOverlay(QMainWindow):
         
         self.text = "Waiting..."
         self.is_recording = False
+        self.score = 0
         
         # Drag Logic
         self.old_pos = None
@@ -28,6 +29,10 @@ class ModernOverlay(QMainWindow):
     def set_text(self, text):
         self.text = text
         self.update() # Trigger repaint
+
+    def set_score(self, score):
+        self.score = score
+        self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -72,6 +77,32 @@ class ModernOverlay(QMainWindow):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(text_color)
         painter.drawPath(path)
+
+        # Draw Score (Small text below)
+        if self.score > 0:
+            score_text = f"Accuracy: {int(self.score)}%"
+            score_font = QFont("Helvetica", 12)
+            score_font.setBold(True)
+            painter.setFont(score_font)
+            
+            score_metrics = QFontMetrics(score_font)
+            score_width = score_metrics.horizontalAdvance(score_text)
+            sx = rect.width() - score_width - 20
+            sy = y + 40 # 40px below main timer
+            
+            score_path = QPainterPath()
+            score_path.addText(sx, sy, score_font, score_text)
+            
+            # Outline
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(score_path)
+            
+            # Fill
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(170, 170, 170, 255)) # Silver/Gray
+            painter.drawPath(score_path)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

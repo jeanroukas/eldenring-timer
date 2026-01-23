@@ -4,7 +4,9 @@ import winsound
 import subprocess
 import threading
 import os
+import sys
 import json
+import subprocess
 from typing import Optional, List, Dict
 from src.services.base_service import IStateService, IConfigService, IVisionService, IOverlayService, IDatabaseService
 from src.pattern_manager import PatternManager
@@ -24,8 +26,11 @@ class StateService(IStateService):
         self.current_session_id = -1
         
         self.running = False
-        self.is_hibernating = True
-        self.game_process = "nightreign.exe"
+        self.is_hibernating = False # Default to visible (safer)
+        # Reverted per user: nightreign.exe
+        self.game_process = "nightreign.exe" 
+        
+
         
         # Game State
         self.phases = [
@@ -64,10 +69,10 @@ class StateService(IStateService):
         self.pattern_manager = PatternManager()
         self.current_matched_pattern = ""
         
-        # Day 3 State Machine
-        self.day3_seq_step = 0 
+        # Day 3 Transitions
         self.black_screen_start = 0
         self.in_black_screen = False
+        self.last_phase_change_time = 0
         
         # Victory detection
         self.victory_check_active = False
@@ -77,9 +82,18 @@ class StateService(IStateService):
         # Audio state
         self.last_beep_second = -1
 
+        # Debugging
+        self.last_brightness_log = 0
+
     def initialize(self) -> bool:
         print("StateService: Initializing...")
         self.running = True
+        
+        # Subscribe to config changes
+        self.config.add_observer(self.on_config_changed)
+        
+        # Start Vision Capture Loop
+        self.vision.start_capture()
         self.vision.add_observer(self.on_ocr_result)
         
         # Setup Hotkeys
@@ -89,20 +103,8 @@ class StateService(IStateService):
                 keyboard.add_hotkey('é', lambda: self.handle_manual_feedback("DAY 2"))
                 keyboard.add_hotkey('"', lambda: self.handle_manual_feedback("DAY 3"))
                 keyboard.add_hotkey('(', self.handle_false_positive)
-            except Exception as e:
-                print(f"Failed to register hotkeys: {e}")
-
-    def initialize(self) -> bool:
-        self.running = True
-        self.vision.add_observer(self.on_ocr_result)
-        
-        # Setup Hotkeys
-        if keyboard:
-            try:
-                keyboard.add_hotkey('&', lambda: self.handle_manual_feedback("DAY 1"))
-                keyboard.add_hotkey('é', lambda: self.handle_manual_feedback("DAY 2"))
-                keyboard.add_hotkey('"', lambda: self.handle_manual_feedback("DAY 3"))
-                keyboard.add_hotkey('(', self.handle_false_positive)
+                keyboard.add_hotkey('ctrl+shift+b', self.skip_to_boss)
+                keyboard.add_hotkey('ctrl+shift+r', self.restart_application)
             except Exception as e:
                 print(f"Failed to register hotkeys: {e}")
 
@@ -130,10 +132,13 @@ class StateService(IStateService):
     def check_process_task(self):
         try:
             game_running = self.check_process(self.game_process)
+            should_auto_hibernate = self.config.get("auto_hibernate", True)
+
             if game_running and self.is_hibernating:
                  self.schedule(0, self.wake_up)
             elif not game_running and not self.is_hibernating:
-                 self.schedule(0, self.hibernate)
+                 if should_auto_hibernate:
+                     self.schedule(0, self.hibernate)
         except Exception as e:
             print(f"StateService: check_process_task error: {e}")
 
@@ -223,15 +228,25 @@ class StateService(IStateService):
         self.overlay.hide()
         self.vision.pause_capture()
 
+    def on_config_changed(self):
+        print("StateService: Config updated, refreshing parameters...")
+        # Most parameters are read on-demand from self.config, 
+        # but we could force a wake_up/hibernate cycle if needed here.
+        pass
+
     # --- OCR & State Logic ---
-    def on_ocr_result(self, text, width, offset, word_data, brightness=0):
+    def on_ocr_result(self, text, width, offset, word_data, brightness=0, score=0):
         # Called from Vision thread. Dispatch to UI thread for processing if needed 
         # but logic can run here if thread-safe, just UI updates need scheduling.
         # process_ocr_trigger access self state, should be fine properly locked or if single consumer.
         # To be safe and avoid race conditions, we schedule it on UI thread
-        self.schedule(0, lambda: self.process_ocr_trigger(text, width, offset, word_data, brightness))
+        self.schedule(0, lambda: self.process_ocr_trigger(text, width, offset, word_data, brightness, score))
 
-    def process_ocr_trigger(self, text, width, offset, word_data, brightness=0):
+    def process_ocr_trigger(self, text, width, offset, word_data, brightness=0, score=0):
+        # Update overlay score display immediately
+        if score > 0:
+            self.overlay.set_ocr_score(score)
+        
         now = time.time()
         
         # 1. Clean Buffer
@@ -246,10 +261,10 @@ class StateService(IStateService):
             
             if time_since_last_jour > 3.0:
                 self.fast_mode_active = False
-                self.vision.set_scan_delay(0.08)
+                self.vision.set_scan_delay(0.2) # Standard 5 FPS
             elif now > self.fast_mode_end_time and time_since_last_trigger > 2.0:
                 self.fast_mode_active = False
-                self.vision.set_scan_delay(0.08)
+                self.vision.set_scan_delay(0.2) # Standard 5 FPS
 
         should_fast_mode = False
         
@@ -286,7 +301,7 @@ class StateService(IStateService):
                 self.last_fast_mode_trigger = now
                 if not self.fast_mode_active:
                     self.fast_mode_active = True
-                    self.vision.set_scan_delay(0.05)
+                    self.vision.set_scan_delay(0.066) # Fast 15 FPS
                     if now - self.last_beep_time > 2.0:
                          try: winsound.MessageBeep(winsound.MB_ICONWARNING)
                          except: pass
@@ -297,15 +312,25 @@ class StateService(IStateService):
             # Pattern Match
             target_day, score = self.pattern_manager.evaluate(normalized, text_width=width, center_offset=offset, word_data=word_data)
             
-            if target_day and score >= 65:
+            # Apply Soft Guard Penalty
+            if target_day:
+                penalty = self.get_transition_penalty(target_day)
+                score += penalty
+                if penalty != 0 and self.config.get("debug_mode"):
+                    print(f"DEBUG: Soft Guard Penalty for {target_day}: {penalty} (Final Score: {score})")
+
+            # DEBUG: Print all evaluations
+            if self.config.get("debug_mode") and (target_day or score > 40):
+                print(f"DEBUG: Eval '{normalized}' -> {target_day} (Score: {score})")
+            
+            if target_day and score >= 55:
                 detected_trigger = target_day
                 self.current_matched_pattern = normalized
-                if self.config.get("debug_mode"):
-                    print(f"Match: {normalized} -> {target_day} ({score})")
+                print(f"DEBUG: Trigger Candidate '{normalized}' -> {target_day} (Score: {score})")
                 
                 if not self.fast_mode_active:
                     self.fast_mode_active = True
-                    self.vision.set_scan_delay(0.05)
+                    self.vision.set_scan_delay(0.066) # Fast 15 FPS
                 self.last_fast_mode_trigger = now
                 
                 if detected_trigger == "DAY 3":
@@ -316,9 +341,11 @@ class StateService(IStateService):
 
         if detected_trigger:
             self.trigger_buffer.append((now, detected_trigger, score))
+            print(f"DEBUG: Added to buffer. Buffer size: {len(self.trigger_buffer)}")
 
         if not self.trigger_buffer and not self.fast_mode_active:
-             if self.current_phase_index != 10: # If not in Day 3 Prep
+             # Exclude Boss 2 (9) and Day 3 Prep (10) from early exit to allow fade detection
+             if self.current_phase_index not in [9, 10]: 
                  self.overlay.show_recording(False)
                  return
 
@@ -338,32 +365,58 @@ class StateService(IStateService):
             final_decision = "DAY 3"
         elif day_counts["DAY 2"] >= 2 and day_scores["DAY 2"] > 180:
             final_decision = "DAY 2"
-        elif day_counts["DAY 1"] >= 2 and day_scores["DAY 1"] > day_scores["DAY 3"]:
+        elif day_counts["DAY 1"] >= 2 and day_scores["DAY 1"] > 100: 
             final_decision = "DAY 1"
             
         if final_decision and not self.triggered_recently:
-            self.handle_trigger(final_decision)
-            self.triggered_recently = True
-            self.trigger_buffer = []
-            self.schedule(4000, lambda: setattr(self, 'triggered_recently', False))
+            # INSTANT TRIGGER for Day 1 to ensure maximum responsiveness (if it passed consensus)
+            if final_decision == "DAY 1" or not self.triggered_recently:
+                print(f"DEBUG: ACTIVATING TRIGGER {final_decision}")
+                self.handle_trigger(final_decision)
+                self.triggered_recently = True
+                self.trigger_buffer = []
+                self.schedule(4000, lambda: setattr(self, 'triggered_recently', False))
 
-        # Day 3 Black Screen
-        if self.current_phase_index == 10:
-             is_black = (brightness < 15)
+        # Contextual Fade Detection for Day 3
+        if self.current_phase_index in [9, 10]:
+             # Periodic brightness logging for debugging (every 1s in log file)
+             if now - self.last_brightness_log > 1.0:
+                 self.vision.log_debug(f"DEBUG Boss Phase {self.current_phase_index} | Brightness: {brightness:.1f}")
+                 self.last_brightness_log = now
+
+             # "Near Black" Diagnostics (5-40)
+             if 5 <= brightness <= 40:
+                 if not hasattr(self, 'last_near_black_log') or (now - self.last_near_black_log > 0.2):
+                     self.vision.log_debug(f"NEAR BLACK: {brightness:.1f}")
+                     self.last_near_black_log = now
+
+             is_black = (brightness < 3) # Threshold 3 (Strict user request for caves)
              if is_black:
                  if not self.in_black_screen:
                      self.in_black_screen = True
                      self.black_screen_start = now
+                     self.vision.log_debug(f"!!! BLACK SCREEN DETECTED (Br: {brightness:.1f})")
              else:
                  if self.in_black_screen:
                      duration = now - self.black_screen_start
                      self.in_black_screen = False
+                     self.vision.log_debug(f"DEBUG: BLACK SCREEN ENDED (Dur: {duration:.2f}s, Br: {brightness:.1f})")
                      
-                     if 0.3 <= duration <= 1.5 and self.day3_seq_step == 0:
-                         self.day3_seq_step = 1
-                     elif duration >= 0.8 and self.day3_seq_step == 1:
-                         self.trigger_final_boss()
-                         self.day3_seq_step = 0
+                     # Single Pulse Fade (0.3s - 3.0s)
+                     if 0.3 <= duration <= 3.0:
+                         if self.current_phase_index == 9:
+                             self.vision.log_debug(f">>> FADE SUCCESS: Boss 2 -> Day 3 Prep (Dur: {duration:.2f}s)")
+                             self.trigger_day_3()
+                         elif self.current_phase_index == 10:
+                             # Wait 10s after entering Day 3 Prep before allowing Final Boss trigger
+                             if now - self.last_phase_change_time > 10.0:
+                                 self.vision.log_debug(f">>> FADE SUCCESS: Day 3 Prep -> Final Boss (Dur: {duration:.2f}s)")
+                                 self.trigger_final_boss()
+                             else:
+                                 self.vision.log_debug(f"FADE IGNORED: Too soon after Day 3 Prep start ({now - self.last_phase_change_time:.1f}s)")
+                     else:
+                         if self.config.get("debug_mode"):
+                             self.vision.log_debug(f"FADE REJECTED: Duration {duration:.2f}s out of range (0.3-3.0s)")
         
         # Victory check loop handled separately via `check_victory_loop` 
         # but needs to be triggered.
@@ -371,10 +424,31 @@ class StateService(IStateService):
              self.victory_check_active = True
              self.schedule(int(self.victory_check_interval * 1000), self.check_victory_loop)
 
+    def get_transition_penalty(self, target_day: str) -> int:
+        """Sequence Guard: Apply penalties to unlikely state transitions."""
+        # Phase mappings:
+        # Day 1: 0-4
+        # Day 2: 5-9
+        # Day 3: 10-11
+        
+        # Reset (Going back to Day 1)
+        if target_day == "DAY 1" and self.current_phase_index >= 5:
+            return -35
+            
+        # Skip (Day 1 -> Day 3)
+        if target_day == "DAY 3" and self.current_phase_index < 5:
+            return -40
+            
+        # Reverse (Day 3 -> Day 2)
+        if target_day == "DAY 2" and self.current_phase_index >= 10:
+            return -35
+            
+        return 0
+
     def handle_trigger(self, trigger_text: str):
-        if self.current_session_id == -1 and trigger_text == "DAY 1":
+        if self.current_session_id == -1:
              self.current_session_id = self.db.create_session()
-             print(f"StateService: Started Session {self.current_session_id}")
+             print(f"StateService: Started Session {self.current_session_id} (Trigger: {trigger_text})")
              
         if trigger_text == "DAY 1": self.set_phase_by_name_start("Day 1")
         elif trigger_text == "DAY 2": self.set_phase_by_name_start("Day 2")
@@ -401,6 +475,7 @@ class StateService(IStateService):
         self.timer_frozen = False
         self.current_phase_index = index
         self.start_time = time.time()
+        self.last_phase_change_time = time.time() # Added to track delay
         self.update_overlay_now()
         
         if self.current_session_id != -1:
@@ -429,6 +504,30 @@ class StateService(IStateService):
         if self.current_phase_index != 11:
             self.Trigger(11)
             self.boss3_start_time = time.time()
+
+    def skip_to_boss(self):
+        """Skip to the boss of the current day for testing."""
+        print(f"DEBUG: Manual skip requested. Current phase: {self.current_phase_index}")
+        if self.current_phase_index < 4:
+            msg = "SKIP: Skipping to Boss 1"
+            print(msg)
+            self.vision.log_debug(msg)
+            self.Trigger(4)
+        elif self.current_phase_index < 9:
+            msg = "SKIP: Skipping to Boss 2"
+            print(msg)
+            self.vision.log_debug(msg)
+            self.Trigger(9)
+        elif self.current_phase_index == 9:
+            msg = "SKIP: Skipping to Day 3 Preparation"
+            print(msg)
+            self.vision.log_debug(msg)
+            self.trigger_day_3()
+        else:
+            msg = "SKIP: Skipping to Final Boss"
+            print(msg)
+            self.vision.log_debug(msg)
+            self.trigger_final_boss()
 
     def get_current_state(self) -> str:
         if self.current_phase_index == -1: return "Waiting"
@@ -522,3 +621,26 @@ class StateService(IStateService):
              self.pattern_manager.punish(self.current_matched_pattern)
              try: winsound.Beep(500, 500)
              except: pass
+
+    def restart_application(self):
+        print("RESTART REQUESTED")
+        try:
+            # Determine path to start_background.bat in project root
+            # self is in src.services.state_service -> .../src/services/state_service.py
+            # root is .../
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            bat_path = os.path.join(project_root, "start_background.bat")
+            
+            if os.path.exists(bat_path):
+                print(f"Launching {bat_path}...")
+                subprocess.Popen([bat_path], shell=True, cwd=project_root)
+                print("Exiting current process...")
+                time.sleep(0.5)
+                # Ensure clean cleanup if possible, but force exit is needed
+                self.vision.stop_capture()
+                os._exit(0) # Force exit
+            else:
+                print(f"Error: {bat_path} not found.")
+                winsound.Beep(200, 500)
+        except Exception as e:
+            print(f"Restart failed: {e}")

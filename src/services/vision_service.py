@@ -10,12 +10,16 @@ class VisionService(IVisionService):
 
     def initialize(self) -> bool:
         # We assume ConfigService is already initialized
-        # VisionEngine expects a dict-like config object. 
-        # Since ConfigService abstraction might not match exactly what VisionEngine expects (dict),
-        # we might need to pass the raw dict or an adapter.
-        # VisionEngine uses config.get("key", default). ConfigService.get works the same.
         self.engine = VisionEngine(self.config_service)
+        
+        # Subscribe to config changes
+        self.config_service.add_observer(self.on_config_changed)
+        
         return True
+
+    def on_config_changed(self):
+        if self.engine:
+            self.engine.update_from_config()
 
     def shutdown(self) -> None:
         self.stop_capture()
@@ -53,13 +57,17 @@ class VisionService(IVisionService):
         if self.engine:
             self.engine.save_labeled_sample(label)
 
-    def add_observer(self, callback: Callable[[str, int, float, List[Dict], float], None]) -> None:
+    def log_debug(self, message: str) -> None:
+        if self.engine:
+            self.engine.log_debug(message)
+
+    def add_observer(self, callback: Callable[[str, int, float, List[Dict], float, float], None]) -> None:
         if callback not in self.observers:
             self.observers.append(callback)
 
-    def _multicast_callback(self, text, width, offset, word_data, brightness=0):
+    def _multicast_callback(self, text, width, offset, word_data, brightness=0, score=0):
         for observer in self.observers:
-            observer(text, width, offset, word_data, brightness)
+            observer(text, width, offset, word_data, brightness, score)
             
     def update_config(self):
          if self.engine:

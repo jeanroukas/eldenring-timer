@@ -29,8 +29,8 @@ class PatternManager:
             "JOU IL": {"target": "DAY 2", "weight": 40},
             
             "JOUR 1": {"target": "DAY 1", "weight": 60},
-            "JOUR I": {"target": "DAY 1", "weight": 60},
-            "JOURI":  {"target": "DAY 1", "weight": 60},  # Variante sans espace (Strict Whitelist)
+            "JOUR I":  {"target": "DAY 1", "weight": 60},
+            "JOURI":  {"target": "DAY 1", "weight": 60},
             "JOU I":  {"target": "DAY 1", "weight": 40},
             
             # --- Day 3 Noise Patterns (Log Derived) ---
@@ -117,6 +117,9 @@ class PatternManager:
             return None, 0
             
         input_text = input_text.upper()
+        if len(input_text.strip()) < 4:
+            return None, 0
+            
         best_target = None
         max_score = 0
         
@@ -129,9 +132,12 @@ class PatternManager:
                 if fuzz.ratio(w["text"], "JOUR") > 75:
                     has_jour_anchor = True
                     break
-        else:
-            # Fallback if no word_data provided (e.g. tests)
-            if "JOUR" in input_text or "JOU" in input_text:
+        
+        # Fallback: Check full text if word check failed
+        # Handles "JO URI" -> "JOURI" case where word split occurs mid-word
+        if not has_jour_anchor:
+            normalized_nospace = input_text.replace(" ", "")
+            if "JOUR" in normalized_nospace or "JOU" in normalized_nospace:
                  has_jour_anchor = True
         
         if not has_jour_anchor:
@@ -162,17 +168,21 @@ class PatternManager:
             
             # --- Granular Geometric Validation ---
             if text_width > 0:
-                # 1. Width Logic
-                if data["target"] == "DAY 3" and text_width > 1100:
-                    score += 20
-                elif data["target"] in ["DAY 1", "DAY 2"] and text_width < 1050:
-                    score += 20
-                elif data["target"] == "DAY 3" and text_width < 1000:
-                    score -= 40
-                elif data["target"] in ["DAY 1", "DAY 2"] and text_width > 1200:
-                    score -= 40
+                # 1. Width Logic - REMOVED strict pixel thresholds due to animation shrink.
+                
+                # 2. Character Count Consistency Logic
+                # "JOUR I" = 6 chars
+                # "JOUR II" = 7 chars
+                # "JOUR III" = 8 chars
+                actual_len = len(input_text.replace(" ", ""))
+                if data["target"] == "DAY 1" and actual_len <= 5: # JOURI (5), JOUR I (5 if space ignored)
+                     score += 10
+                elif data["target"] == "DAY 2" and actual_len == 6: # JOURII (6)
+                     score += 10
+                elif data["target"] == "DAY 3" and actual_len >= 7: # JOURIII (7)
+                     score += 10
 
-                # 2. Centeredness Logic 
+                # 3. Centeredness Logic 
                 if center_offset is not None:
                     if center_offset < 40:
                         score += 30 # Perfectly centered bonus
@@ -202,8 +212,9 @@ class PatternManager:
                 best_target = data["target"]
                 
         # Final Strict Noise Threshold
-        if max_score < 65: # Raised for high reliability
+        if max_score < 55: # Lowered from 65 to 55 for robustness
              return None, max_score
+
              
         return best_target, max_score
 
