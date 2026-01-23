@@ -4,6 +4,8 @@ from PyQt6.QtCore import Qt, QObject
 from src.services.base_service import ITrayService
 from abc import ABCMeta
 import sys
+import os
+
 
 class TrayMeta(type(QObject), ABCMeta):
     pass
@@ -67,9 +69,14 @@ class TrayService(QObject, ITrayService, metaclass=TrayMeta):
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             icon_path = os.path.join(base_dir, 'assets', 'icon.png')
             if os.path.exists(icon_path):
+                print(f"Loading icon from: {icon_path}")
                 return QIcon(icon_path)
+            else:
+                print(f"Icon file not found at: {icon_path}")
         except Exception as e:
             print(f"Failed to load icon from file: {e}")
+            import traceback
+            traceback.print_exc()
 
         """Creates a simple 64x64 icon with 'ER' text."""
         pixmap = QPixmap(64, 64)
