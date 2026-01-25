@@ -2,7 +2,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, QTimer, Qt
 from abc import ABCMeta
 from typing import Callable, Optional
 from src.services.base_service import IOverlayService, IConfigService
-from src.ui.qt_overlay import ModernOverlay, RunCountOverlay
+from src.ui.qt_overlay import UnifiedOverlay
 from src.service_container import ServiceContainer
 
 class OverlayMeta(type(QObject), ABCMeta):
@@ -14,8 +14,7 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
 
     def __init__(self):
         super().__init__()
-        self.overlay: Optional[ModernOverlay] = None
-        self.run_counter_overlay: Optional[RunCountOverlay] = None
+        self.unified_overlay: Optional[UnifiedOverlay] = None
         self.is_recording = False
         
         # Connect signal to slot (will execute in Main Thread)
@@ -26,98 +25,67 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
         return True
 
     def shutdown(self) -> None:
-        if self.overlay:
-            self.overlay.close()
-        if self.run_counter_overlay:
-            self.run_counter_overlay.close()
+        if self.unified_overlay:
+            self.unified_overlay.close()
 
     def create_overlay(self):
         config_service = ServiceContainer().resolve(IConfigService)
 
-        # Timer Overlay
-        if not self.overlay:
-            self.overlay = ModernOverlay()
-            self.overlay.is_recording = self.is_recording
+        if not self.unified_overlay:
+            self.unified_overlay = UnifiedOverlay()
             
             # Restore position
-            x = config_service.get("timer_pos_x")
-            y = config_service.get("timer_pos_y")
+            x = config_service.get("unified_pos_x")
+            y = config_service.get("unified_pos_y")
             if x is not None and y is not None:
-                self.overlay.move(x, y)
+                self.unified_overlay.move(x, y)
 
-            self.overlay.position_changed.connect(self._on_timer_moved)
-            self.overlay.show()
+            self.unified_overlay.position_changed.connect(self._on_overlay_moved)
+            self.unified_overlay.show()
 
-        # Run Counter Overlay
-        if not self.run_counter_overlay:
-            self.run_counter_overlay = RunCountOverlay()
-            
-            # Restore position
-            rx = config_service.get("run_counter_pos_x")
-            ry = config_service.get("run_counter_pos_y")
-            if rx is not None and ry is not None:
-                self.run_counter_overlay.move(rx, ry)
-            
-            self.run_counter_overlay.position_changed.connect(self._on_run_counter_moved)
-            self.run_counter_overlay.show()
-
-    def _on_timer_moved(self, x: int, y: int):
+    def _on_overlay_moved(self, x: int, y: int):
         try:
             config_service = ServiceContainer().resolve(IConfigService)
-            config_service.set("timer_pos_x", x)
-            config_service.set("timer_pos_y", y)
+            config_service.set("unified_pos_x", x)
+            config_service.set("unified_pos_y", y)
         except:
-            pass # Handle potential service resolution issues during shutdown
-
-    def _on_run_counter_moved(self, x: int, y: int):
-        try:
-            config_service = ServiceContainer().resolve(IConfigService)
-            config_service.set("run_counter_pos_x", x)
-            config_service.set("run_counter_pos_y", y)
-        except:
-            pass
+            pass 
 
     def show(self) -> None:
-        if not self.overlay:
+        if not self.unified_overlay:
             self.create_overlay()
-        self.overlay.show()
-        if self.run_counter_overlay:
-            self.run_counter_overlay.show()
+        self.unified_overlay.show()
 
     def hide(self) -> None:
-        if self.overlay:
-            self.overlay.hide()
-        if self.run_counter_overlay:
-            self.run_counter_overlay.hide()
+        if self.unified_overlay:
+            self.unified_overlay.hide()
     
     def update_timer(self, text: str) -> None:
-        if self.overlay:
-            self.overlay.set_text(text)
+        if self.unified_overlay:
+            self.unified_overlay.set_timer_text(text)
 
     def update_status(self, text: str) -> None:
-        if self.overlay:
-            self.overlay.set_text(text)
+        # Map generic status updates to timer text if appropriate, or ignore
+        if self.unified_overlay:
+            self.unified_overlay.set_timer_text(text)
     
-    def update_run_count(self, count: int) -> None:
-        if self.run_counter_overlay:
-            self.run_counter_overlay.set_run_count(count)
+    def update_run_stats(self, stats: dict) -> None:
+        if self.unified_overlay:
+            self.unified_overlay.set_stats(stats)
 
     def show_recording(self, show: bool):
         self.is_recording = show
-        if self.overlay:
-            self.overlay.is_recording = show
-            self.overlay.update()
+        if self.unified_overlay:
+            self.unified_overlay.is_recording = show
+            self.unified_overlay.update()
 
     def set_click_through(self, enabled: bool) -> None:
-        # Qt 6.x supports this via setWindowFlags or setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        if self.overlay:
-            self.overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
-        if self.run_counter_overlay:
-            self.run_counter_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
+        if self.unified_overlay:
+            self.unified_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
 
     def set_ocr_score(self, score: float) -> None:
-        if self.overlay:
-            self.overlay.set_score(score)
+        if self.unified_overlay:
+            self.unified_overlay.set_score(score)
 
     def schedule(self, delay_ms: int, callback: Callable) -> None:
         """Schedule a callback on the UI thread."""

@@ -1,0 +1,34 @@
+{
+    "session_summary": {
+        "session_id": 8,
+        "phase": "STARTUP",
+        "total_death_loss": 0,
+        "death_count": 0,
+        "spent_at_merchants": 0,
+        "current_level": 1,
+        "death_history": []
+    },
+    "events": [
+        {
+            "timestamp": 1769320720.253234,
+            "time_str": "06:58:40",
+            "event": "SESSION_STARTED",
+            "data": {
+                "run_count": 8,
+                "phase": "STARTUP",
+                "level": 1
+            }
+        },
+        {
+            "timestamp": 1769320722.1117282,
+            "time_str": "06:58:42",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 4,
+                "burst": [
+                    4
+                ]
+            }
+        }
+    ]
+}

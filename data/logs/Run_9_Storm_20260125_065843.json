@@ -1,0 +1,23 @@
+{
+    "session_summary": {
+        "session_id": 9,
+        "phase": "Storm",
+        "total_death_loss": 0,
+        "death_count": 0,
+        "spent_at_merchants": 0,
+        "current_level": 1,
+        "death_history": []
+    },
+    "events": [
+        {
+            "timestamp": 1769320723.6088865,
+            "time_str": "06:58:43",
+            "event": "SESSION_STARTED",
+            "data": {
+                "run_count": 9,
+                "phase": "Storm",
+                "level": 1
+            }
+        }
+    ]
+}

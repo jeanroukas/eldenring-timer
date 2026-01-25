@@ -1,0 +1,78 @@
+{
+    "session_summary": {
+        "session_id": 42,
+        "phase": "STARTUP",
+        "total_death_loss": 0,
+        "death_count": 0,
+        "recovery_count": 0,
+        "spent_at_merchants": 0,
+        "current_level": 1,
+        "death_history": []
+    },
+    "events": [
+        {
+            "timestamp": 1769334553.3415935,
+            "time_str": "10:49:13",
+            "event": "SESSION_STARTED",
+            "data": {
+                "run_count": 42,
+                "phase": "STARTUP",
+                "level": 1
+            }
+        },
+        {
+            "timestamp": 1769334553.529432,
+            "time_str": "10:49:13",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 0.0,
+                "ram": 73.6
+            }
+        },
+        {
+            "timestamp": 1769334563.6425102,
+            "time_str": "10:49:23",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 15.1,
+                "ram": 73.1
+            }
+        },
+        {
+            "timestamp": 1769334573.7838898,
+            "time_str": "10:49:33",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 12.8,
+                "ram": 73.4
+            }
+        },
+        {
+            "timestamp": 1769334583.8129919,
+            "time_str": "10:49:43",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 20.3,
+                "ram": 76.4
+            }
+        },
+        {
+            "timestamp": 1769334594.07564,
+            "time_str": "10:49:54",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 25.2,
+                "ram": 76.7
+            }
+        },
+        {
+            "timestamp": 1769334604.3308022,
+            "time_str": "10:50:04",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 27.7,
+                "ram": 76.5
+            }
+        }
+    ]
+}

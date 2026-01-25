@@ -53,7 +53,7 @@ class SettingsWindow(QMainWindow):
         self.chk_training_data = QCheckBox("Collect Training Data (Raw)")
         self.chk_training_data.setChecked(self.config_service.get("save_raw_samples", True))
 
-        self.chk_auto_hibernate = QCheckBox("Masquer le timer si le jeu n'est pas lancé")
+        self.chk_auto_hibernate = QCheckBox("Mode Auto-Hibernation (Activé = Pause si jeu absent)")
         self.chk_auto_hibernate.setChecked(self.config_service.get("auto_hibernate", True))
         
         self.chk_run_at_startup = QCheckBox("Démarrer avec Windows")
@@ -127,9 +127,15 @@ class SettingsWindow(QMainWindow):
         
         layout.addWidget(QLabel("Capture region is currently set via the 'Select Region' button."))
         
-        self.btn_select_region = QPushButton("Select Screen Region")
+        self.btn_select_region = QPushButton("Select Timer Region")
         # Note: self.select_region will be provided by a callback or delegate
         layout.addWidget(self.btn_select_region)
+        
+        self.btn_select_level_region = QPushButton("Select Level Region")
+        layout.addWidget(self.btn_select_level_region)
+        
+        self.btn_select_runes_region = QPushButton("Select Runes Region")
+        layout.addWidget(self.btn_select_runes_region)
         
         layout.addStretch()
         self.tabs.addTab(tab, "Capture")

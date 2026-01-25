@@ -10,6 +10,7 @@ import datetime
 import json
 from PIL import ImageGrab
 import re
+from typing import List, Dict
 from src.utils.tesseract_api import TesseractAPI
 from src.logger import logger
 
@@ -30,6 +31,8 @@ class VisionEngine:
         self.running = False
         self.paused = False
         self.region = config.get("monitor_region", {})
+        self.level_region = config.get("level_region", {})
+        self.runes_region = config.get("runes_region", {})
         self.scan_delay = 0.2 # Default delay (Standard 5 FPS)
         
         self.last_raw_frame = None
@@ -113,6 +116,17 @@ class VisionEngine:
             if self.config.get("debug_mode"):
                 print(f"VISION: Failed to load Tesseract DLL: {e}. Falling back to pytesseract.")
             self.tess_api = None
+
+        self.last_level_scan_time = 0
+        self.last_runes_scan_time = 0
+        self.level_callback = None
+        self.runes_callback = None
+
+    def set_level_callback(self, callback):
+        self.level_callback = callback
+
+    def set_runes_callback(self, callback):
+        self.runes_callback = callback
 
     def update_config(self, new_config):
         """Updates configuration."""
@@ -237,6 +251,18 @@ class VisionEngine:
         self.region = region
         self.config["monitor_region"] = region
         self._init_camera()
+
+    def update_level_region(self, region):
+        """Updates the level OCR region."""
+        self.level_region = region
+        self.config["level_region"] = region
+        # No need to re-init camera as this uses simple crop from ImageGrab or separate logic
+
+    def update_runes_region(self, region):
+        """Updates the runes OCR region."""
+        self.runes_region = region
+        self.config["runes_region"] = region
+
 
     def set_region_override(self, region):
         """Sets a temporary override region for scanning (e.g. for Victory check). Pass None to clear."""
@@ -363,18 +389,16 @@ class VisionEngine:
 
             # PIL Capture (always used)
             try:
-                full_img = ImageGrab.grab() # Primary Screen Only
-                
                 if reg:
                     left = reg.get('left', 0)
                     top = reg.get('top', 0)
                     width = reg.get('width', 100)
                     height = reg.get('height', 100)
-                    crop_box = (left, top, left + width, top + height)
-                    cropped = full_img.crop(crop_box)
+                    # Use bbox directly with all_screens=True to support negative coordinates (multi-monitor)
+                    cropped = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
                 else:
                     # Fallback if no region (should not happen)
-                    cropped = full_img
+                    cropped = ImageGrab.grab(all_screens=True)
                     
                 # Convert PIL to OpenCV (RGB -> BGR)
                 img_np = np.array(cropped)
@@ -411,11 +435,10 @@ class VisionEngine:
         # Optimization: We look for white-ish pixels. 
         # The 'JOUR' text is typically very bright (>200)
         max_val = np.max(gray)
-        if max_val < 100: # Safe threshold even for dim text
+        # Reverted to 100 per user report
+        if max_val < 100: 
             return False
             
-        # Also check mean of top 5% brightest pixels? 
-        # Overkill for now. max_val is extremely fast.
         return True
 
     def preprocess_image(self, img, pass_type="otsu", custom_val=0, scale=1.0, gamma=1.0):
@@ -494,6 +517,152 @@ class VisionEngine:
         if match:
             return match.group(0)
         return ""
+
+    def _process_level_ocr(self):
+        """
+        Captures and processes the Level region.
+        """
+        if not self.level_region: return
+        
+        try:
+            # Manual Capture for now to avoid state issues with main loop override
+            reg = self.level_region
+            left = reg.get('left', 0)
+            top = reg.get('top', 0)
+            width = reg.get('width', 50)
+            height = reg.get('height', 30)
+            
+            # Simple check for valid region
+            if width <= 0 or height <= 0: return
+
+            # Enable all_screens=True to support multi-monitor setups with negative coordinates
+            full_img = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
+            img_np = np.array(full_img)
+            img = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+            if img is None: return
+
+            # 2. Preprocess (Optimized based on tuning results)
+            # Best found: Gamma 0.6, Otsu, Scale 2.0 (standard for low res)
+            scale = 2.0
+            img_resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+            
+            # Gamma correction 0.6 (Darkens the image to highlight bright text)
+            gray = self.adjust_gamma(gray, gamma=0.6)
+            
+            # Otsu thresholding worked best in tests
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            
+            # 3. OCR (Digits only)
+            if self.tess_api:
+                # Use High-performance DLL if available
+                # Note: TessAPI already has psm 7 and whitelist 0-9 by default 
+                # but we'll re-ensure consistency if needed.
+                text, conf = self.tess_api.get_text(thresh)
+            else:
+                # Fallback to Pytesseract
+                custom_config = r'--psm 7 -c tessedit_char_whitelist=0123456789'
+                text = pytesseract.image_to_string(thresh, config=custom_config).strip()
+            
+            try:
+                if text and text.isdigit():
+                    level = int(text)
+                    # Sanity check: Level 1 to 713 (max level)
+                    if 1 <= level <= 713:
+                        if self.level_callback:
+                            self.level_callback(level)
+            except:
+                pass
+
+        except Exception as e:
+            if self.config.get("debug_mode"):
+                print(f"Level Processing Failed: {e}")
+
+    def _process_runes_ocr(self):
+        """
+        Captures and processes the Runes region.
+        """
+        if not self.runes_region: return
+        
+        try:
+            reg = self.runes_region
+            left = reg.get('left', 0)
+            top = reg.get('top', 0)
+            width = reg.get('width', 150)
+            height = reg.get('height', 40)
+            
+            if width <= 0 or height <= 0: return
+
+            full_img = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
+            img_np = np.array(full_img)
+            img = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+            if img is None: return
+
+            # Preprocess (Same as Level for consistency)
+            scale = 2.0
+            img_resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+            gray = self.adjust_gamma(gray, gamma=0.6)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            
+            if self.tess_api:
+                text, conf = self.tess_api.get_text(thresh)
+            else:
+                custom_config = r'--psm 7 -c tessedit_char_whitelist=0123456789'
+                text = pytesseract.image_to_string(thresh, config=custom_config).strip()
+            
+            try:
+                if text and text.isdigit():
+                    num = int(text)
+                    if self.runes_callback:
+                        self.runes_callback(num)
+            except:
+                pass
+
+        except Exception as e:
+            if self.config.get("debug_mode"):
+                print(f"Runes Processing Failed: {e}")
+
+    def request_runes_burst(self) -> List[int]:
+        """
+        Performs 5 high-speed scans of the runes region to find a consensus.
+        """
+        results = []
+        if not self.runes_region: return results
+        
+        for _ in range(5):
+            try:
+                # Capture
+                reg = self.runes_region
+                left, top = reg.get('left', 0), reg.get('top', 0)
+                width, height = reg.get('width', 150), reg.get('height', 40)
+                
+                full_img = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
+                img = cv2.cvtColor(np.array(full_img), cv2.COLOR_RGB2BGR)
+                
+                # Preprocess
+                scaled = cv2.resize(img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+                gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+                gamma_adj = self.adjust_gamma(gray, gamma=0.6)
+                _, thresh = cv2.threshold(gamma_adj, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                
+                # OCR
+                if self.tess_api:
+                    text, _ = self.tess_api.get_text(thresh)
+                else:
+                    text = pytesseract.image_to_string(thresh, config='--psm 7 -c tessedit_char_whitelist=0123456789').strip()
+                
+                if text and text.isdigit():
+                    results.append(int(text))
+            except Exception as e:
+                if self.config.get("debug_mode"): print(f"Burst scan error: {e}")
+            
+            # Very small pause to allow screen buffer to potentially update (mostly frames)
+            time.sleep(0.01)
+            
+        return results
 
     def _loop(self, callback):
         print(f"Vision Engine: Monitoring started with 2-Pass Strategy (optimized). Debug Mode: {self.config.get('debug_mode')}")
@@ -793,6 +962,23 @@ class VisionEngine:
                 # Dynamic Delay
                 elapsed = time.perf_counter() - loop_start
                 self.last_loop_end = time.perf_counter() # Mark end of processing
+                
+                # --- LEVEL OCR (1Hz) ---
+                if self.level_region and (time.time() - self.last_level_scan_time > 1.0):
+                    self.last_level_scan_time = time.time()
+                    try:
+                        self._process_level_ocr()
+                    except Exception as e:
+                        print(f"Level OCR Error: {e}")
+
+                # --- RUNES OCR (1Hz) ---
+                if self.runes_region and (time.time() - self.last_runes_scan_time > 1.0):
+                    self.last_runes_scan_time = time.time()
+                    try:
+                        self._process_runes_ocr()
+                    except Exception as e:
+                        print(f"Runes OCR Error: {e}")
+
                 remaining_delay = max(0, self.scan_delay - elapsed)
                 time.sleep(remaining_delay if remaining_delay > 0 else 0.001)
 

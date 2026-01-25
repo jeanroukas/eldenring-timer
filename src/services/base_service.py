@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Callable
-
+from typing import Any, Dict, Optional, Callable, List
 class IService(ABC):
     """Base interface for all services."""
     @abstractmethod
@@ -45,7 +44,20 @@ class IVisionService(IService):
     @abstractmethod
     def set_region(self, region: tuple) -> None:
         pass
+
+    @abstractmethod
+    def set_level_region(self, region: tuple) -> None:
+        pass
         
+    @abstractmethod
+    def set_runes_region(self, region: tuple) -> None:
+        pass
+        
+    @abstractmethod
+    def request_runes_burst(self) -> List[int]:
+        """Triggers a high-speed burst of rune scans and returns the results."""
+        pass
+
     @abstractmethod
     def add_observer(self, callback: Callable[[str, Dict], None]) -> None:
         """Register a callback for OCR results."""
@@ -85,6 +97,11 @@ class IOverlayService(IService):
 
     @abstractmethod
     def set_ocr_score(self, score: float) -> None:
+        pass
+        
+    @abstractmethod
+    def update_run_stats(self, stats: Dict[str, Any]) -> None:
+        """Updates the run statistics with structured data."""
         pass
 
 class IStateService(IService):

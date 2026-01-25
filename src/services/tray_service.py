@@ -39,11 +39,12 @@ class TrayService(QObject, ITrayService, metaclass=TrayMeta):
         action_quit = self.menu.addAction("Quit")
         action_quit.triggered.connect(self.quit_app)
         
+        # Revert to standard context menu to fix crash
         self.tray_icon.setContextMenu(self.menu)
         self.tray_icon.show()
         
         return True
-
+        
     def shutdown(self) -> None:
         if self.tray_icon:
             self.tray_icon.hide()

@@ -1,0 +1,51 @@
+{
+    "session_summary": {
+        "session_id": 46,
+        "phase": "STARTUP",
+        "total_death_loss": 0,
+        "death_count": 0,
+        "recovery_count": 0,
+        "spent_at_merchants": 0,
+        "current_level": 1,
+        "death_history": []
+    },
+    "events": [
+        {
+            "timestamp": 1769335423.6309106,
+            "time_str": "11:03:43",
+            "event": "SESSION_STARTED",
+            "data": {
+                "run_count": 46,
+                "phase": "STARTUP",
+                "level": 1
+            }
+        },
+        {
+            "timestamp": 1769335425.3910248,
+            "time_str": "11:03:45",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 0.0,
+                "ram": 75.0
+            }
+        },
+        {
+            "timestamp": 1769335434.5965042,
+            "time_str": "11:03:54",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 20.5,
+                "ram": 73.8
+            }
+        },
+        {
+            "timestamp": 1769335444.7923875,
+            "time_str": "11:04:04",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 22.8,
+                "ram": 74.1
+            }
+        }
+    ]
+}

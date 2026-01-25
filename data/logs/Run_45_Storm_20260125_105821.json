@@ -1,0 +1,134 @@
+{
+    "session_summary": {
+        "session_id": 45,
+        "phase": "Storm",
+        "total_death_loss": 0,
+        "death_count": 0,
+        "recovery_count": 0,
+        "spent_at_merchants": 7432,
+        "current_level": 2,
+        "death_history": []
+    },
+    "events": [
+        {
+            "timestamp": 1769335101.0691078,
+            "time_str": "10:58:21",
+            "event": "SESSION_STARTED",
+            "data": {
+                "run_count": 45,
+                "phase": "Storm",
+                "level": 1
+            }
+        },
+        {
+            "timestamp": 1769335101.349889,
+            "time_str": "10:58:21",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 25.7,
+                "ram": 74.8
+            }
+        },
+        {
+            "timestamp": 1769335111.475323,
+            "time_str": "10:58:31",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 22.2,
+                "ram": 74.9
+            }
+        },
+        {
+            "timestamp": 1769335121.707298,
+            "time_str": "10:58:41",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 20.9,
+                "ram": 75.1
+            }
+        },
+        {
+            "timestamp": 1769335121.942197,
+            "time_str": "10:58:41",
+            "event": "SPENDING",
+            "data": {
+                "spent": 4,
+                "total_spent": 4,
+                "current": 0
+            }
+        },
+        {
+            "timestamp": 1769335131.833423,
+            "time_str": "10:58:51",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 20.8,
+                "ram": 75.4
+            }
+        },
+        {
+            "timestamp": 1769335141.8431625,
+            "time_str": "10:59:01",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 21.0,
+                "ram": 75.3
+            }
+        },
+        {
+            "timestamp": 1769335152.0201168,
+            "time_str": "10:59:12",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 18.9,
+                "ram": 75.3
+            }
+        },
+        {
+            "timestamp": 1769335161.6347592,
+            "time_str": "10:59:21",
+            "event": "SPENDING",
+            "data": {
+                "spent": 7428,
+                "total_spent": 7432,
+                "current": 252
+            }
+        },
+        {
+            "timestamp": 1769335162.1865933,
+            "time_str": "10:59:22",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 29.2,
+                "ram": 74.1
+            }
+        },
+        {
+            "timestamp": 1769335172.3141382,
+            "time_str": "10:59:32",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 20.6,
+                "ram": 73.9
+            }
+        },
+        {
+            "timestamp": 1769335173.1334336,
+            "time_str": "10:59:33",
+            "event": "LEVEL_UP",
+            "data": {
+                "old": 1,
+                "new": 2
+            }
+        },
+        {
+            "timestamp": 1769335182.3737047,
+            "time_str": "10:59:42",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 20.8,
+                "ram": 72.8
+            }
+        }
+    ]
+}

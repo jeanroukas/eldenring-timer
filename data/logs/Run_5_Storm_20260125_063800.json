@@ -1,0 +1,628 @@
+{
+    "session_summary": {
+        "session_id": 5,
+        "phase": "Storm",
+        "total_death_loss": 0,
+        "death_count": 0,
+        "spent_at_merchants": 788009,
+        "current_level": 11,
+        "death_history": []
+    },
+    "events": [
+        {
+            "timestamp": 1769319480.5690892,
+            "time_str": "06:38:00",
+            "event": "SESSION_STARTED",
+            "data": {
+                "run_count": 5,
+                "phase": "Storm",
+                "level": 1
+            }
+        },
+        {
+            "timestamp": 1769319481.9662778,
+            "time_str": "06:38:01",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 7,
+                "burst": [
+                    7
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319481.9672801,
+            "time_str": "06:38:01",
+            "event": "SPENDING",
+            "data": {
+                "spent": 3015,
+                "total_spent": 3015,
+                "current": 7
+            }
+        },
+        {
+            "timestamp": 1769319500.17798,
+            "time_str": "06:38:20",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 0,
+                "burst": [
+                    0,
+                    0
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319500.1784828,
+            "time_str": "06:38:20",
+            "event": "SPENDING",
+            "data": {
+                "spent": 7,
+                "total_spent": 3022,
+                "current": 0
+            }
+        },
+        {
+            "timestamp": 1769319541.195814,
+            "time_str": "06:39:01",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 5621,
+                "burst": [
+                    3470,
+                    3086,
+                    3036,
+                    3022,
+                    3022
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319541.1978137,
+            "time_str": "06:39:01",
+            "event": "SPENDING",
+            "data": {
+                "spent": 1099,
+                "total_spent": 4121,
+                "current": 5621
+            }
+        },
+        {
+            "timestamp": 1769319543.2429574,
+            "time_str": "06:39:03",
+            "event": "SPENDING",
+            "data": {
+                "spent": 2599,
+                "total_spent": 6720,
+                "current": 3022
+            }
+        },
+        {
+            "timestamp": 1769319574.0235527,
+            "time_str": "06:39:34",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 8127,
+                "burst": [
+                    8555,
+                    8638,
+                    8658,
+                    8662,
+                    8662
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319576.0244231,
+            "time_str": "06:39:36",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 8662,
+                "burst": [
+                    7,
+                    4
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319583.9820428,
+            "time_str": "06:39:43",
+            "event": "SPENDING",
+            "data": {
+                "spent": 7922,
+                "total_spent": 14642,
+                "current": 740
+            }
+        },
+        {
+            "timestamp": 1769319759.0925663,
+            "time_str": "06:42:39",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 44342,
+                "burst": [
+                    47407,
+                    48012,
+                    48116,
+                    48135,
+                    48140
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319773.7500305,
+            "time_str": "06:42:53",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 19675,
+                "burst": [
+                    18965,
+                    18843,
+                    18821,
+                    18814,
+                    18814
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319773.7511718,
+            "time_str": "06:42:53",
+            "event": "SPENDING",
+            "data": {
+                "spent": 28465,
+                "total_spent": 43107,
+                "current": 19675
+            }
+        },
+        {
+            "timestamp": 1769319775.7750287,
+            "time_str": "06:42:55",
+            "event": "SPENDING",
+            "data": {
+                "spent": 861,
+                "total_spent": 43968,
+                "current": 18814
+            }
+        },
+        {
+            "timestamp": 1769319898.698385,
+            "time_str": "06:44:58",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 52882,
+                "burst": [
+                    55394,
+                    55918,
+                    55994,
+                    56013,
+                    56014
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319935.6108186,
+            "time_str": "06:45:35",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 61686,
+                "burst": [
+                    63159,
+                    63450,
+                    63501,
+                    63514,
+                    63514
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319969.036579,
+            "time_str": "06:46:09",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 71239,
+                "burst": [
+                    72508,
+                    72769,
+                    72804,
+                    72814,
+                    72814
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319976.3613904,
+            "time_str": "06:46:16",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 30704,
+                "burst": [
+                    25130,
+                    24283,
+                    24154,
+                    24132,
+                    24127
+                ]
+            }
+        },
+        {
+            "timestamp": 1769319976.36339,
+            "time_str": "06:46:16",
+            "event": "SPENDING",
+            "data": {
+                "spent": 42110,
+                "total_spent": 86078,
+                "current": 30704
+            }
+        },
+        {
+            "timestamp": 1769319978.4051309,
+            "time_str": "06:46:18",
+            "event": "SPENDING",
+            "data": {
+                "spent": 6577,
+                "total_spent": 92655,
+                "current": 24127
+            }
+        },
+        {
+            "timestamp": 1769319991.800688,
+            "time_str": "06:46:31",
+            "event": "SPENDING",
+            "data": {
+                "spent": 24123,
+                "total_spent": 116778,
+                "current": 4
+            }
+        },
+        {
+            "timestamp": 1769320006.3630846,
+            "time_str": "06:46:46",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 24127,
+                "burst": [
+                    724127
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320034.0428057,
+            "time_str": "06:47:14",
+            "event": "SPENDING",
+            "data": {
+                "spent": 24057,
+                "total_spent": 140835,
+                "current": 70
+            }
+        },
+        {
+            "timestamp": 1769320046.1188595,
+            "time_str": "06:47:26",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 13169,
+                "burst": [
+                    12713,
+                    12642,
+                    12627
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320046.119861,
+            "time_str": "06:47:26",
+            "event": "SPENDING",
+            "data": {
+                "spent": 10958,
+                "total_spent": 151793,
+                "current": 13169
+            }
+        },
+        {
+            "timestamp": 1769320048.3704233,
+            "time_str": "06:47:28",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 12627,
+                "burst": [
+                    12627,
+                    12627,
+                    1202
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320048.3719308,
+            "time_str": "06:47:28",
+            "event": "SPENDING",
+            "data": {
+                "spent": 542,
+                "total_spent": 152335,
+                "current": 12627
+            }
+        },
+        {
+            "timestamp": 1769320053.8385637,
+            "time_str": "06:47:33",
+            "event": "SPENDING",
+            "data": {
+                "spent": 10000,
+                "total_spent": 162335,
+                "current": 2627
+            }
+        },
+        {
+            "timestamp": 1769320084.2427378,
+            "time_str": "06:48:04",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 4294,
+                "burst": [
+                    4407,
+                    4425,
+                    4427,
+                    4477,
+                    4427
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320089.7514558,
+            "time_str": "06:48:09",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 32648,
+                "burst": [
+                    34082,
+                    34377,
+                    34416,
+                    34427,
+                    34427
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320097.2659492,
+            "time_str": "06:48:17",
+            "event": "SPENDING",
+            "data": {
+                "spent": 307900,
+                "total_spent": 470235,
+                "current": 36827
+            }
+        },
+        {
+            "timestamp": 1769320100.6523461,
+            "time_str": "06:48:20",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 3682,
+                "burst": [
+                    37204,
+                    38380,
+                    38590,
+                    38619,
+                    38627
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320100.6533482,
+            "time_str": "06:48:20",
+            "event": "SPENDING",
+            "data": {
+                "spent": 33145,
+                "total_spent": 503380,
+                "current": 3682
+            }
+        },
+        {
+            "timestamp": 1769320125.7150507,
+            "time_str": "06:48:45",
+            "event": "SPENDING",
+            "data": {
+                "spent": 32137,
+                "total_spent": 535517,
+                "current": 16690
+            }
+        },
+        {
+            "timestamp": 1769320147.039166,
+            "time_str": "06:49:07",
+            "event": "SPENDING",
+            "data": {
+                "spent": 12000,
+                "total_spent": 547517,
+                "current": 4690
+            }
+        },
+        {
+            "timestamp": 1769320205.1368122,
+            "time_str": "06:50:05",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 12752,
+                "burst": [
+                    13506,
+                    13655,
+                    13681,
+                    13690,
+                    13690
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320231.8394039,
+            "time_str": "06:50:31",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 31022,
+                "burst": [
+                    32248,
+                    32534,
+                    32577,
+                    32590,
+                    32590
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320252.692064,
+            "time_str": "06:50:52",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 33697,
+                "burst": [
+                    34601,
+                    34921,
+                    34978,
+                    34990,
+                    34990
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320337.6863008,
+            "time_str": "06:52:17",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 47539,
+                "burst": [
+                    48062,
+                    48166,
+                    48184,
+                    48190,
+                    48190
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320383.9546986,
+            "time_str": "06:53:03",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 52110,
+                "burst": [
+                    53267,
+                    53533,
+                    53576,
+                    53590,
+                    53590
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320436.7585723,
+            "time_str": "06:53:56",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 125356,
+                "burst": [
+                    10839,
+                    10503,
+                    10445,
+                    10431,
+                    10431
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320438.7563126,
+            "time_str": "06:53:58",
+            "event": "SPENDING",
+            "data": {
+                "spent": 114925,
+                "total_spent": 662442,
+                "current": 10431
+            }
+        },
+        {
+            "timestamp": 1769320503.2880578,
+            "time_str": "06:55:03",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 55104,
+                "burst": [
+                    55828,
+                    55998,
+                    56024,
+                    56031,
+                    56031
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320509.6617105,
+            "time_str": "06:55:09",
+            "event": "SPENDING",
+            "data": {
+                "spent": 56027,
+                "total_spent": 718469,
+                "current": 4
+            }
+        },
+        {
+            "timestamp": 1769320518.0019956,
+            "time_str": "06:55:18",
+            "event": "SPENDING",
+            "data": {
+                "spent": 49271,
+                "total_spent": 767740,
+                "current": 6760
+            }
+        },
+        {
+            "timestamp": 1769320523.275503,
+            "time_str": "06:55:23",
+            "event": "SPENDING",
+            "data": {
+                "spent": 6757,
+                "total_spent": 774497,
+                "current": 3
+            }
+        },
+        {
+            "timestamp": 1769320544.0793974,
+            "time_str": "06:55:44",
+            "event": "SPENDING",
+            "data": {
+                "spent": 6756,
+                "total_spent": 781253,
+                "current": 4
+            }
+        },
+        {
+            "timestamp": 1769320550.7093947,
+            "time_str": "06:55:50",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 7,
+                "burst": [
+                    6760,
+                    6760
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320614.5507832,
+            "time_str": "06:56:54",
+            "event": "OCR_WEAK_CONSENSUS",
+            "data": {
+                "reading": 4,
+                "burst": [
+                    4
+                ]
+            }
+        },
+        {
+            "timestamp": 1769320614.5543036,
+            "time_str": "06:56:54",
+            "event": "SPENDING",
+            "data": {
+                "spent": 6756,
+                "total_spent": 788009,
+                "current": 4
+            }
+        }
+    ]
+}

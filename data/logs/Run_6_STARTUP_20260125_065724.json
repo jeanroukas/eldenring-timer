@@ -1,0 +1,23 @@
+{
+    "session_summary": {
+        "session_id": 6,
+        "phase": "STARTUP",
+        "total_death_loss": 0,
+        "death_count": 0,
+        "spent_at_merchants": 0,
+        "current_level": 1,
+        "death_history": []
+    },
+    "events": [
+        {
+            "timestamp": 1769320644.3876586,
+            "time_str": "06:57:24",
+            "event": "SESSION_STARTED",
+            "data": {
+                "run_count": 6,
+                "phase": "STARTUP",
+                "level": 1
+            }
+        }
+    ]
+}
