@@ -1,11 +1,12 @@
 from PyQt6.QtWidgets import QMainWindow, QApplication, QWidget
-from PyQt6.QtCore import Qt, QTimer, QPoint
+from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QFontMetrics, QPainterPath
 
-class ModernOverlay(QMainWindow):
+class DraggableWindow(QMainWindow):
+    position_changed = pyqtSignal(int, int)
+
     def __init__(self):
         super().__init__()
-        
         # Window Flags: Frameless, Always on Top, Tool (no taskbar icon), Transparent Background
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint | 
@@ -13,9 +14,36 @@ class ModernOverlay(QMainWindow):
             Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.old_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, event):
+        if self.old_pos:
+            delta = event.globalPosition().toPoint() - self.old_pos
+            self.move(self.pos() + delta)
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseReleaseEvent(self, event):
+        if self.old_pos: # Only if we were dragging
+            self.old_pos = None
+            self.position_changed.emit(self.x(), self.y())
+        else:
+             # Even if just a click, if old_pos was cleared properly we might want to ensure we reset but here we just clear.
+             # Wait, mouseRelease comes after drag. 
+             pass
+        # Always emit position on release if we want to be sure, or only if moved. 
+        # Simpler: just emit self.pos()
+        self.old_pos = None
+        self.position_changed.emit(self.x(), self.y())
+
+class ModernOverlay(DraggableWindow):
+    def __init__(self):
+        super().__init__()
         
-        # Initial Geometry (Top Right)
-        # We'll set a default, but it can be moved.
+        # Initial Geometry (Top Right) - Default
         screen_geometry = QApplication.primaryScreen().geometry()
         self.setGeometry(screen_geometry.width() - 650, 20, 600, 150)
         
@@ -23,9 +51,6 @@ class ModernOverlay(QMainWindow):
         self.is_recording = False
         self.score = 0
         
-        # Drag Logic
-        self.old_pos = None
-
     def set_text(self, text):
         self.text = text
         self.update() # Trigger repaint
@@ -47,19 +72,14 @@ class ModernOverlay(QMainWindow):
         
         # Text to draw
         display_text = self.text
-        if self.is_recording and not display_text.startswith("🔴") and not display_text.startswith("Waiting"):
-             # Optional: Add recording dot if not present (logic might vary)
-             pass 
-
+        
         # Positioning: Right Aligned with padding
         rect = self.rect()
         text_width = metrics.horizontalAdvance(display_text)
         x = rect.width() - text_width - 20
         y = 60 # Vertical center-ish
         
-        # Draw Outline (Simulated with multiple draws or QPainterPath)
-        # Using QPainterPath is cleaner for outlines but expensive-ish. 
-        # Simple offset draw is fine for this.
+        # Draw Outline
         outline_color = QColor(0, 0, 0, 255)
         text_color = QColor(255, 255, 255, 255)
         
@@ -104,15 +124,67 @@ class ModernOverlay(QMainWindow):
             painter.setBrush(QColor(170, 170, 170, 255)) # Silver/Gray
             painter.drawPath(score_path)
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.old_pos = event.globalPosition().toPoint()
+class RunCountOverlay(DraggableWindow):
+    def __init__(self):
+        super().__init__()
+        
+        # Initial Geometry (Top Left) - Default
+        self.setGeometry(20, 20, 300, 150)
+        
+        self.runs_text = "Next Level: -- runs"
+        
+    def set_run_count(self, count):
+        self.runs_text = f"Next Level: {count} runs"
+        self.update()
 
-    def mouseMoveEvent(self, event):
-        if self.old_pos:
-            delta = event.globalPosition().toPoint() - self.old_pos
-            self.move(self.pos() + delta)
-            self.old_pos = event.globalPosition().toPoint()
-
-    def mouseReleaseEvent(self, event):
-        self.old_pos = None
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Standard Font Setup
+        font = QFont("Helvetica", 12) # Smaller font
+        font.setBold(True)
+        painter.setFont(font)
+        
+        # Text Positioning: Top Left, 20px padding
+        x = 20
+        y = 30
+        
+        # Draw Text
+        path = QPainterPath()
+        path.addText(x, y, font, self.runs_text)
+        
+        # Outline
+        painter.setPen(QPen(QColor(0, 0, 0, 255), 3))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+        
+        # Fill
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 255))
+        painter.drawPath(path)
+        
+        # Graph Placeholder
+        # Draw a box below the text
+        graph_rect_y = y + 10
+        graph_rect_h = 60
+        graph_rect_w = 200
+        
+        painter.setPen(QPen(QColor(255, 255, 255, 100), 1))
+        painter.setBrush(QColor(0, 0, 0, 100))
+        painter.drawRect(x, graph_rect_y, graph_rect_w, graph_rect_h)
+        
+        # Draw a dummy curve
+        painter.setPen(QPen(QColor(0, 255, 0, 255), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        
+        # Simple sine-ish wave
+        curve_path = QPainterPath()
+        curve_path.moveTo(x, graph_rect_y + graph_rect_h / 2)
+        for i in range(1, graph_rect_w, 5):
+            # Just a sine wave visual
+            import math
+            offset_y = math.sin(i * 0.1) * 20
+            curve_path.lineTo(x + i, graph_rect_y + graph_rect_h / 2 + offset_y)
+            
+        painter.drawPath(curve_path)

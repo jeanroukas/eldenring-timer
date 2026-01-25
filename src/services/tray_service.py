@@ -62,22 +62,31 @@ class TrayService(QObject, ITrayService, metaclass=TrayMeta):
         QApplication.quit()
         sys.exit(0)
 
-    def _create_icon(self) -> QIcon:
-        """Creates an icon from file or falls back to programmatic generation."""
-        # Try to load from assets
-        try:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            icon_path = os.path.join(base_dir, 'assets', 'icon.png')
-            if os.path.exists(icon_path):
-                print(f"Loading icon from: {icon_path}")
-                return QIcon(icon_path)
-            else:
-                print(f"Icon file not found at: {icon_path}")
-        except Exception as e:
-            print(f"Failed to load icon from file: {e}")
-            import traceback
-            traceback.print_exc()
+    def set_hibernation_mode(self, active: bool):
+        """Updates icon to indicate status. Active=True means Hibernating (Gray). Active=False means Normal (Gold)."""
+        # User Logic: 
+        # "quand l'ocr fonctionne c'est qu'on est pas en hibernation et la on reprend la couleur de base"
+        # Hibernation = Gray/Dim. Running = Gold.
+        
+        if active:
+            # Hibernating -> Gray
+            icon = self._create_icon(color_hex="#555555", bg_hex="#1a1a1a")
+            self.tray_icon.setToolTip("Elden Ring Nightreign Timer (En veille)")
+        else:
+            # Active -> Gold
+            icon = self._create_icon(color_hex="#c6a664", bg_hex="#1a1a1a")
+            self.tray_icon.setToolTip("Elden Ring Nightreign Timer (Actif)")
+            
+        self.tray_icon.setIcon(icon)
 
+    def _create_icon(self, color_hex="#c6a664", bg_hex="#1a1a1a") -> QIcon:
+        """Creates an icon from file or falls back to programmatic generation."""
+        # Try to load from assets (Skip for this dynamic color feature unless we have multiple assets)
+        # To support dynamic colors requested by user, we prefer programmatic generation 
+        # UNLESS we have specific icons. User asked for color change.
+        # So we force programmatic generation for now, OR valid assets.
+        # Let's use programmatic for the requested feature.
+        
         """Creates a simple 64x64 icon with 'ER' text."""
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.GlobalColor.transparent)
@@ -86,12 +95,12 @@ class TrayService(QObject, ITrayService, metaclass=TrayMeta):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         # Draw Circle Background
-        painter.setBrush(QColor("#1a1a1a")) # Dark Gray
-        painter.setPen(QColor("#c6a664"))   # Gold
+        painter.setBrush(QColor(bg_hex)) 
+        painter.setPen(QColor(color_hex))
         painter.drawEllipse(2, 2, 60, 60)
         
         # Draw Text
-        painter.setPen(QColor("#c6a664"))
+        painter.setPen(QColor(color_hex))
         font = painter.font()
         font.setBold(True)
         font.setPointSize(20)

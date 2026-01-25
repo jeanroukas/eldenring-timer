@@ -15,5 +15,10 @@
         "height": 93
     },
     "save_raw_samples": false,
-    "auto_hibernate": true
+    "auto_hibernate": true,
+    "audio_volume": 78,
+    "audio_enabled": true,
+    "audio_device_id": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\AudioOutput\\TokenEnums\\MMAudioOut\\{0.0.0.00000000}.{966c08a8-3e20-4ad7-bc15-e2085e23bb95}",
+    "audio_rate": 223,
+    "audio_voice_id": "WINRT:HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices\\Tokens\\MSTTS_V110_frFR_JulieM"
 }

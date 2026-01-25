@@ -8,7 +8,7 @@ import sys
 import json
 import subprocess
 from typing import Optional, List, Dict
-from src.services.base_service import IStateService, IConfigService, IVisionService, IOverlayService, IDatabaseService
+from src.services.base_service import IStateService, IConfigService, IVisionService, IOverlayService, IDatabaseService, IAudioService, ITrayService
 from src.pattern_manager import PatternManager
 try:
     import keyboard
@@ -18,11 +18,13 @@ import psutil
 from src.logger import logger
 
 class StateService(IStateService):
-    def __init__(self, config: IConfigService, vision: IVisionService, overlay: IOverlayService, db: IDatabaseService):
+    def __init__(self, config: IConfigService, vision: IVisionService, overlay: IOverlayService, db: IDatabaseService, audio: IAudioService, tray: ITrayService):
         self.config = config
         self.vision = vision
         self.overlay = overlay
         self.db = db
+        self.audio = audio
+        self.tray = tray
         
         self.current_session_id = -1
         
@@ -86,6 +88,10 @@ class StateService(IStateService):
 
         # Debugging
         self.last_brightness_log = 0
+        
+        # Audio Logic State
+        self.last_announced_phase = -1
+        self.last_announcement_second = -1
 
     def initialize(self) -> bool:
         logger.info("StateService: Initializing...")
@@ -97,6 +103,9 @@ class StateService(IStateService):
         # Start Vision Capture Loop
         self.vision.start_capture()
         self.vision.add_observer(self.on_ocr_result)
+
+        # Initialize Audio
+        self.audio.initialize()
         
         # Setup Hotkeys
         if keyboard:
@@ -134,20 +143,25 @@ class StateService(IStateService):
     def check_process_task(self):
         try:
             game_running = self.check_process(self.game_process)
-            should_auto_hibernate = self.config.get("auto_hibernate", True)
             
-            # Wake up if game is running OR if user disabled auto-hibernate (Manual Mode)
-            should_be_awake = game_running or (not should_auto_hibernate)
+            # "auto_hibernate" being True means we should hide when game closes.
+            # "auto_hibernate" being False means we "Always Show" (Force Active).
+            force_show = not self.config.get("auto_hibernate", True)
+            
+            # The logic: We should be active/awake if the Game is Running OR if Force Show is enabled.
+            should_be_awake = game_running or force_show
 
-            if should_be_awake and self.is_hibernating:
-                 self.schedule(0, self.wake_up)
-            elif not should_be_awake and not self.is_hibernating:
-                 self.schedule(0, self.hibernate)
+            if should_be_awake:
+                 if self.is_hibernating:
+                     self.wake_up()
+            else:
+                 if not self.is_hibernating:
+                     self.hibernate()
         except Exception as e:
             logger.error(f"StateService: check_process_task error: {e}")
 
     def update_timer_task(self):
-        if self.timer_frozen:
+        if self.timer_frozen or self.is_hibernating:
             return
 
         if self.start_time is not None and self.current_phase_index >= 0:
@@ -168,13 +182,40 @@ class StateService(IStateService):
                 secs = int(remaining % 60)
                 timer_str = f"{mins:02}:{secs:02}"
                 
-                # Audio Beeps (Thread safe generally, but winsound might be picky)
-                if remaining_int in [30, 10, 3, 2, 1] and remaining_int != self.last_beep_second:
-                     try: winsound.Beep(1000 if remaining_int > 3 else 1500, 200)
-                     except: pass
-                     self.last_beep_second = remaining_int
-                elif remaining_int not in [30, 10, 3, 2, 1]:
-                     self.last_beep_second = -1
+                # Audio Announcements
+                # Reset if new second
+                if remaining_int != self.last_announcement_second:
+                    is_storm = "Storm" in phase["name"]
+                    
+                    if is_storm:
+                        # "Fermeture de la zone..." logic
+                        if remaining_int == 120:
+                            self.audio.announce("Fermeture de la zone dans 2 minutes")
+                        elif remaining_int == 60:
+                             self.audio.announce("Fermeture de la zone dans 1 minute")
+                        elif remaining_int == 30:
+                             self.audio.announce("Dans 30 secondes")
+                        elif remaining_int == 5:
+                             self.audio.announce("5 secondes")
+                        elif remaining_int == 0:
+                             self.audio.announce("La zone se referme")
+
+                    self.last_announcement_second = remaining_int
+                
+                # Check for Phase Start Announcement
+                if self.current_phase_index != self.last_announced_phase:
+                    # Logic: "Une fois la zone refermée indiquer le temps qu'il reste..."
+                    # This happens when we enter a "Storm" phase (after Shrinking).
+                    if "Storm" in phase["name"]:
+                         # Convert duration to human readable
+                         d_min = phase["duration"] // 60
+                         d_sec = phase["duration"] % 60
+                         msg = "La zone se refermera dans "
+                         if d_min > 0: msg += f"{d_min} minutes "
+                         if d_sec > 0: msg += f"{d_sec} secondes"
+                         self.audio.announce(msg)
+                    
+                    self.last_announced_phase = self.current_phase_index
             else:
                 # Stopwatch
                 mins = int(elapsed // 60)
@@ -225,12 +266,16 @@ class StateService(IStateService):
         self.is_hibernating = False
         self.overlay.show()
         self.vision.resume_capture()
+        if self.tray:
+            self.tray.set_hibernation_mode(False)
 
     def hibernate(self):
         logger.info("Elden Ring closed. Hibernating...")
         self.is_hibernating = True
         self.overlay.hide()
         self.vision.pause_capture()
+        if self.tray:
+            self.tray.set_hibernation_mode(True)
 
     def on_config_changed(self):
         logger.info("StateService: Config updated, refreshing parameters...")
@@ -588,8 +633,7 @@ class StateService(IStateService):
         final_text = f"Total: {fmt(total_time)} | Boss 3: {fmt(boss3_time)}"
         
         self.overlay.update_timer(final_text)
-        try: winsound.MessageBeep(winsound.MB_ICONASTERISK)
-        except: pass
+        self.audio.announce("Victoire !")
 
     # --- Manual Feedback ---
     def handle_manual_feedback(self, correct_target):

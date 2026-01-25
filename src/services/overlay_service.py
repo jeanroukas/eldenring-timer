@@ -1,8 +1,9 @@
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer, Qt
 from abc import ABCMeta
 from typing import Callable, Optional
-from src.services.base_service import IOverlayService
-from src.ui.qt_overlay import ModernOverlay
+from src.services.base_service import IOverlayService, IConfigService
+from src.ui.qt_overlay import ModernOverlay, RunCountOverlay
+from src.service_container import ServiceContainer
 
 class OverlayMeta(type(QObject), ABCMeta):
     pass
@@ -14,6 +15,7 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
     def __init__(self):
         super().__init__()
         self.overlay: Optional[ModernOverlay] = None
+        self.run_counter_overlay: Optional[RunCountOverlay] = None
         self.is_recording = False
         
         # Connect signal to slot (will execute in Main Thread)
@@ -21,27 +23,72 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
 
     def initialize(self) -> bool:
         self.create_overlay()
-        # self.overlay.hide() # REMOVED: Start visible by default
         return True
 
     def shutdown(self) -> None:
         if self.overlay:
             self.overlay.close()
+        if self.run_counter_overlay:
+            self.run_counter_overlay.close()
 
     def create_overlay(self):
-        if self.overlay: return
-        self.overlay = ModernOverlay()
-        self.overlay.is_recording = self.is_recording
-        self.overlay.show()
+        config_service = ServiceContainer().resolve(IConfigService)
+
+        # Timer Overlay
+        if not self.overlay:
+            self.overlay = ModernOverlay()
+            self.overlay.is_recording = self.is_recording
+            
+            # Restore position
+            x = config_service.get("timer_pos_x")
+            y = config_service.get("timer_pos_y")
+            if x is not None and y is not None:
+                self.overlay.move(x, y)
+
+            self.overlay.position_changed.connect(self._on_timer_moved)
+            self.overlay.show()
+
+        # Run Counter Overlay
+        if not self.run_counter_overlay:
+            self.run_counter_overlay = RunCountOverlay()
+            
+            # Restore position
+            rx = config_service.get("run_counter_pos_x")
+            ry = config_service.get("run_counter_pos_y")
+            if rx is not None and ry is not None:
+                self.run_counter_overlay.move(rx, ry)
+            
+            self.run_counter_overlay.position_changed.connect(self._on_run_counter_moved)
+            self.run_counter_overlay.show()
+
+    def _on_timer_moved(self, x: int, y: int):
+        try:
+            config_service = ServiceContainer().resolve(IConfigService)
+            config_service.set("timer_pos_x", x)
+            config_service.set("timer_pos_y", y)
+        except:
+            pass # Handle potential service resolution issues during shutdown
+
+    def _on_run_counter_moved(self, x: int, y: int):
+        try:
+            config_service = ServiceContainer().resolve(IConfigService)
+            config_service.set("run_counter_pos_x", x)
+            config_service.set("run_counter_pos_y", y)
+        except:
+            pass
 
     def show(self) -> None:
         if not self.overlay:
             self.create_overlay()
         self.overlay.show()
+        if self.run_counter_overlay:
+            self.run_counter_overlay.show()
 
     def hide(self) -> None:
         if self.overlay:
             self.overlay.hide()
+        if self.run_counter_overlay:
+            self.run_counter_overlay.hide()
     
     def update_timer(self, text: str) -> None:
         if self.overlay:
@@ -50,6 +97,10 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
     def update_status(self, text: str) -> None:
         if self.overlay:
             self.overlay.set_text(text)
+    
+    def update_run_count(self, count: int) -> None:
+        if self.run_counter_overlay:
+            self.run_counter_overlay.set_run_count(count)
 
     def show_recording(self, show: bool):
         self.is_recording = show
@@ -61,6 +112,8 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
         # Qt 6.x supports this via setWindowFlags or setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         if self.overlay:
             self.overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
+        if self.run_counter_overlay:
+            self.run_counter_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
 
     def set_ocr_score(self, score: float) -> None:
         if self.overlay:

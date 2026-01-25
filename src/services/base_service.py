@@ -129,3 +129,15 @@ class ITrayService(IService):
     def show_message(self, title: str, message: str) -> None:
         pass
 
+
+class IAudioService(IService):
+    """Interface for text-to-speech and audio feedback."""
+    @abstractmethod
+    def announce(self, text: str) -> None:
+        """Speaks the given text."""
+        pass
+
+    @abstractmethod
+    def set_enabled(self, enabled: bool) -> None:
+        """Enables or disables audio output."""
+        pass

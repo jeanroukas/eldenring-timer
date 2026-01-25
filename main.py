@@ -3,13 +3,14 @@ import argparse
 import ctypes
 from PyQt6.QtWidgets import QApplication
 from src.service_container import ServiceContainer
-from src.services.base_service import IConfigService, IVisionService, IOverlayService, IStateService, IDatabaseService, ITrayService
+from src.services.base_service import IConfigService, IVisionService, IOverlayService, IStateService, IDatabaseService, ITrayService, IAudioService
 from src.services.config_service import ConfigService
 from src.services.vision_service import VisionService
 from src.services.overlay_service import OverlayService
 from src.services.state_service import StateService
 from src.services.database_service import DatabaseService
 from src.services.tray_service import TrayService
+from src.services.audio_service import AudioService
 from src.ui.region_selector import RegionSelector
 from src.ui.settings_window import SettingsWindow
 
@@ -58,13 +59,17 @@ class Launcher:
         self.db_service = DatabaseService()
         self.container.register(IDatabaseService, self.db_service)
 
-        # 5. State
-        self.state_service = StateService(self.config_service, self.vision_service, self.overlay_service, self.db_service)
-        self.container.register(IStateService, self.state_service)
+        # 5. Audio
+        self.audio_service = AudioService(self.config_service)
+        self.container.register(IAudioService, self.audio_service)
 
         # 6. Tray (System Icon)
         self.tray_service = TrayService(self)
         self.container.register(ITrayService, self.tray_service)
+
+        # 7. State
+        self.state_service = StateService(self.config_service, self.vision_service, self.overlay_service, self.db_service, self.audio_service, self.tray_service)
+        self.container.register(IStateService, self.state_service)
 
     def run(self):
         parser = argparse.ArgumentParser()
@@ -82,7 +87,7 @@ class Launcher:
     def show_config_ui(self):
         self.config_service.initialize() # Load config
         self.db_service.initialize() # Load DB for stats
-        self.settings = SettingsWindow(self.config_service, self.db_service)
+        self.settings = SettingsWindow(self.config_service, self.db_service, self.audio_service)
         self.settings.btn_select_region.clicked.connect(self.select_region)
         self.settings.show()
 
