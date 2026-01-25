@@ -38,23 +38,28 @@ The application tracks progress through defined game phases. Transitions are tri
 
 We utilize a mathematical model to assess real-time performance against an ideal exponential growth curve.
 
-### Core Model
+### Stepped "Snowball" Model
 
-- **Ideal Runes at time $t$**:
-  $$ \text{Ideal}(t) = \text{Goal} \times \left( \frac{t}{\text{TotalTime}} \right)^{1.7} $$
-- **Status Delta**: `Current Runes - Ideal Runes`.
-  - Positive (+): Ahead of curve (Green/Gold).
-  - Negative (-): Behind curve (Red).
+The model now better reflects game reality by separating **Farming Progress** (Continuous) from **Boss Rewards** (Discrete Steps).
 
-### Velocity Metrics
+#### Base Constants
 
-- **Burn Rate**: Current Runes/Minute.
-- **Required Velocity**: Runes/Sec needed from *now* until finish to meet the goal.
-  $$ \text{ReqRPS} = \frac{\text{RemainingGoal}}{\text{RemainingTime}} $$
+- **Farming Goal**: 452,116 Runes.
+- **Total Farming Time**: 40 Minutes (2400s).
+- **Boss 1 Bonus**: 11,000 Runes (at 20 mins).
+- **Boss 2 Bonus**: 50,000 Runes (at 40 mins).
+- **Start Delay**: 15s (Falling/Loading).
 
-### Grade Calculation (S/A/B/C)
+#### Formula: $Ideal(t)$
 
-Grades are now dynamic based on the **Status Delta** (Deviation from the Ideal Curve), rather than fixed arbitrary RPM values.
+1. **Effective Time**: $t_{eff} = \max(0, t - 15)$.
+2. **Base Farming (Continuous)**:
+    $$ \text{Runes}_{farm} = 452,116 \times \left( \frac{t_{eff}}{2400} \right)^{1.7} $$
+3. **Boss Steps (Discrete)**:
+    - If $t_{eff} > 1200$ (20m): Add 11,000.
+    - If $t_{eff} > 2400$ (40m): Add 50,000.
+
+**Total Ideal**: $\text{Runes}_{farm} + \text{Bonus}$
 
 ---
 

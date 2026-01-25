@@ -251,6 +251,15 @@ class UnifiedOverlay(DraggableWindow):
         painter.drawEllipse(col3_x, y_right - 10, 8, 8)
         painter.setPen(color_text_dim)
         painter.drawText(col3_x + 15, y_right, f"OCR: {int(self.ocr_score)}%")
+
+        
+        if self.is_recording:
+             # Pulsing Red Dot for Recording
+             rec_x = col3_x + 90
+             rec_y = y_right - 10
+             painter.setBrush(QColor(255, 50, 50))
+             painter.drawEllipse(rec_x, rec_y, 8, 8)
+             
         y_right += row_height + 5
         
         # Merch
@@ -334,10 +343,25 @@ class UnifiedOverlay(DraggableWindow):
                             ideal_val = 0
                         else:
                             effective_t = t_sec - offset
-                            effective_duration = duration - offset
+                            effective_duration = 2400.0 # 40m fixed base
+                            
+                            # 1. Base Farming
                             ratio = effective_t / effective_duration
                             if ratio > 1.0: ratio = 1.0
-                            ideal_val = goal * (ratio ** exp)
+                            
+                            # Farming Goal (Total - Bosses) = 452116
+                            farming_goal = 452116 
+                            farming_val = farming_goal * (ratio ** exp)
+                            
+                            # 2. Boss Steps
+                            boss_bonus = 0
+                            day1_end = 1200.0
+                            day2_end = 2400.0
+                            
+                            if effective_t > day1_end: boss_bonus += 11000
+                            if effective_t > day2_end: boss_bonus += 50000
+                            
+                            ideal_val = farming_val + boss_bonus
                         
                         # Map to Screen
                         px = graph_x + i * step_x
@@ -423,4 +447,9 @@ class UnifiedOverlay(DraggableWindow):
         elif not is_max:
              painter.setFont(QFont("Cinzel", 10))
              painter.setPen(color_text_dim)
+
              painter.drawText(graph_x + 50, graph_y + graph_h // 2, "Waiting for run data...")
+
+    def show_recording(self, show: bool):
+        self.is_recording = show
+        self.update()

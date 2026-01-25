@@ -366,7 +366,13 @@ class StateService(IStateService):
                         if current_calc > self.last_valid_total_runes:
                             self.last_valid_total_runes = current_calc
                         
-                        total_accumulated = self.last_valid_total_runes
+                        # FORCE 0 for first 15s (Falling/Loading)
+                        # We use the length of history as the time index (approx 1s per tick)
+                        if len(self.run_accumulated_history) < 15:
+                             total_accumulated = 0
+                        else:
+                             total_accumulated = self.last_valid_total_runes
+                        
                         self.run_accumulated_history.append(total_accumulated)
                         
                         # --- GRAPH LOGGING ---
@@ -422,16 +428,19 @@ class StateService(IStateService):
                     secs = int(elapsed % 60)
                     timer_str = f"{mins:02}:{secs:02}"
                     
-                prefix = ""
-                if self.fast_mode_active: prefix += "🔴 "
+                # prefix = ""
+                # if self.fast_mode_active: prefix += "🔴 "
                 
                 next_idx = self.current_phase_index + 1
                 if phase["duration"] > 0 and next_idx < len(self.phases) and "Shrinking" in self.phases[next_idx]["name"]:
                     remaining = max(0, phase["duration"] - elapsed)
                     if remaining <= 30 and int(time.time() * 2) % 2 == 0:
-                        prefix += "⚠️ "
-
-                self.overlay.update_timer(f"{prefix}{timer_str}")
+                        pass # prefix += "⚠️ " # User likely doesn't want this either if they hate icons? 
+                        # Actually user only complained about the record icon. I'll keep the warning or remove it?
+                        # "il y a toujours le logo record... il a sa place colonne de droite."
+                        # The warning is different. I'll just remove the Record one.
+                        
+                self.overlay.update_timer(f"{timer_str}")
 
             else:
                  self.overlay.update_timer("00:00")
@@ -985,22 +994,40 @@ class StateService(IStateService):
     # --- ANALYTICS ENGINE ---
 
     def get_ideal_runes_at_time(self, t_seconds: float) -> float:
-        """Returns the ideal rune count at time t using the Snowball Curve."""
+        """
+        Returns the ideal rune count at time t using the "Stepped Snowball" Curve.
+        
+        Logic:
+        1. Effective Time = t - 15s (Falling/Loading)
+        2. Base Farming = 452k * (t_eff / 40min)^1.7
+        3. Boss Bonuses = +11k (at 20m) + 50k (at 40m)
+        """
         offset = 15.0 # Seconds "in the air"
         
         if t_seconds <= offset: return 0
         
         effective_t = t_seconds - offset
-        effective_total_time = self.NR_TOTAL_TIME - offset
+        effective_total_time = self.NR_TOTAL_TIME # 2400s (40m)
         
-        if effective_t >= effective_total_time: return self.NR_FARMING_GOAL
-        
-        # Normalized time (0.0 to 1.0)
+        # 1. Base Farming (Continuous)
+        # Cap ratio at 1.0 to avoid overshooting goal if run goes long
         ratio = effective_t / effective_total_time
+        if ratio > 1.0: ratio = 1.0
         
-        # Snowball Curve
-        progress = ratio ** self.NR_SNOWBALL
-        return self.NR_FARMING_GOAL * progress
+        farming_progress = self.NR_FARMING_GOAL * (ratio ** self.NR_SNOWBALL)
+        
+        # 2. Boss Steps (Discrete)
+        boss_bonus = 0
+        day1_end = 1200.0 # 20 mins
+        day2_end = 2400.0 # 40 mins
+        
+        if effective_t > day1_end:
+            boss_bonus += 11000 # Boss 1
+            
+        if effective_t > day2_end:
+            boss_bonus += 50000 # Boss 2
+            
+        return farming_progress + boss_bonus
 
     def calculate_efficiency_grade(self) -> str:
         if self.start_time is None: 
