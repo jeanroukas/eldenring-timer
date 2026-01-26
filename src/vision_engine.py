@@ -820,33 +820,48 @@ class VisionEngine:
             return False, 0.0
 
     def _process_menu_detection(self):
-         # 1. Single Fast Check using global coordinates
-         found, conf = self.detect_menu_screen()
-         
-         if self.config.get("debug_mode"):
-             logger.info(f"Menu Burst Check Starting (initial conf: {conf:.2f})")
-         
-         if found:
-             # 2. Burst Confirmation (5 frames)
-             confirm_count = 0
+         try:
+             # 1. Single Fast Check using global coordinates
+             found, conf = self.detect_menu_screen()
              
-             for _ in range(5):
-                 try:
-                     found_burst, conf_burst = self.detect_menu_screen()
-                     if found_burst: 
-                        confirm_count += 1
-                 except Exception as e:
-                     pass
+             if self.config.get("debug_mode"):
+                 logger.info(f"Menu Burst Check Starting (initial conf: {conf:.2f})")
+             
+             if found:
+                 # 2. Burst Confirmation (5 frames)
+                 confirm_count = 0
                  
-                 # Tiny sleep to allow screen update
-                 time.sleep(0.02)
-             
-             # Consensus: 4/5
-             if confirm_count >= 4:
-                 if self.config.get("debug_mode"): print(f"Menu Screen CONFIRMED ({confirm_count}/5).")
-                 self.menu_callback(True, conf)
+                 for i in range(5):
+                     try:
+                         found_burst, conf_burst = self.detect_menu_screen()
+                         if found_burst: 
+                            confirm_count += 1
+                         if self.config.get("debug_mode"):
+                             logger.info(f"  Burst {i+1}/5: {found_burst} (conf: {conf_burst:.2f})")
+                     except Exception as e:
+                         if self.config.get("debug_mode"):
+                             logger.error(f"  Burst {i+1}/5 ERROR: {e}")
+                     
+                     # Tiny sleep to allow screen update
+                     time.sleep(0.02)
+                 
+                 # Consensus: 4/5
+                 if confirm_count >= 4:
+                     logger.info(f"Menu Screen CONFIRMED ({confirm_count}/5)")
+                     try:
+                         self.menu_callback(True, conf)
+                         logger.info("Menu callback executed successfully")
+                     except Exception as e:
+                         logger.error(f"Menu callback ERROR: {e}")
+                 else:
+                     logger.info(f"Menu Screen REJECTED ({confirm_count}/5)")
              else:
-                 if self.config.get("debug_mode"): print(f"Menu Screen REJECTED ({confirm_count}/5).")
+                 if self.config.get("debug_mode"):
+                     logger.info(f"Menu initial check failed (conf: {conf:.2f})")
+         except Exception as e:
+             logger.error(f"_process_menu_detection CRASH: {e}")
+             import traceback
+             logger.error(traceback.format_exc())
 
 
 

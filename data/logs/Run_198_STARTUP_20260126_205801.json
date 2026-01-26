@@ -172,6 +172,15 @@
                 "cpu": 26.7,
                 "ram": 76.6
             }
+        },
+        {
+            "timestamp": 1769457653.423474,
+            "time_str": "21:00:53",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 25.0,
+                "ram": 76.3
+            }
         }
     ]
 }

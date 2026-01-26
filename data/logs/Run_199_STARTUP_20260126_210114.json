@@ -1,0 +1,114 @@
+{
+    "session_summary": {
+        "session_id": 199,
+        "phase": "STARTUP",
+        "total_death_loss": 0,
+        "death_count": 0,
+        "recovery_count": 0,
+        "spent_at_merchants": 0,
+        "current_level": 1,
+        "death_history": []
+    },
+    "events": [
+        {
+            "timestamp": 1769457674.0686252,
+            "time_str": "21:01:14",
+            "event": "SESSION_STARTED",
+            "data": {
+                "run_count": 199,
+                "phase": "STARTUP",
+                "level": 1
+            }
+        },
+        {
+            "timestamp": 1769457675.1223812,
+            "time_str": "21:01:15",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 0.0,
+                "ram": 77.0
+            }
+        },
+        {
+            "timestamp": 1769457684.3184536,
+            "time_str": "21:01:24",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 26.0,
+                "ram": 77.1
+            }
+        },
+        {
+            "timestamp": 1769457694.3563752,
+            "time_str": "21:01:34",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 24.9,
+                "ram": 77.3
+            }
+        },
+        {
+            "timestamp": 1769457704.5548084,
+            "time_str": "21:01:44",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 25.5,
+                "ram": 77.5
+            }
+        },
+        {
+            "timestamp": 1769457714.6042411,
+            "time_str": "21:01:54",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 23.7,
+                "ram": 77.4
+            }
+        },
+        {
+            "timestamp": 1769457724.6759343,
+            "time_str": "21:02:04",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 21.8,
+                "ram": 77.4
+            }
+        },
+        {
+            "timestamp": 1769457734.7357178,
+            "time_str": "21:02:14",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 23.1,
+                "ram": 77.6
+            }
+        },
+        {
+            "timestamp": 1769457744.7440073,
+            "time_str": "21:02:24",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 22.6,
+                "ram": 77.1
+            }
+        },
+        {
+            "timestamp": 1769457754.7733114,
+            "time_str": "21:02:34",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 21.8,
+                "ram": 76.8
+            }
+        },
+        {
+            "timestamp": 1769457764.8367803,
+            "time_str": "21:02:44",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 21.4,
+                "ram": 76.9
+            }
+        }
+    ]
+}
