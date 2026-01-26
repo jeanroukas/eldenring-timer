@@ -1,5 +1,5 @@
 from typing import Tuple, Optional
-from src.data.rune_data import RuneData
+from src.services.rune_data import RuneData
 
 class NightreignLogic:
     """
