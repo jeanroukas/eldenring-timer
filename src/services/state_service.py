@@ -106,7 +106,11 @@ class StateService(IStateService):
         # Persistence & Smoothing
         self.last_valid_total_runes = 0
         self.last_display_level = 1
+        self.last_display_level = 1
         self.last_display_runes = 0
+        
+        # Menu Detection State
+        self.is_in_menu = False
 
     def initialize(self) -> bool:
         logger.info("StateService: Initializing...")
@@ -589,7 +593,10 @@ class StateService(IStateService):
                 self.overlay.update_timer(f"{timer_str}")
 
             else:
-                 self.overlay.update_timer("00:00")
+                 if getattr(self, "is_in_menu", False):
+                      self.overlay.update_timer("🏠 Menu")
+                 else:
+                      self.overlay.update_timer("00:00")
                  # Force stats update to show "Waiting" in Phase Name area
                  self.update_runes_display(self.current_run_level)
                  
@@ -914,7 +921,10 @@ class StateService(IStateService):
         
         # Force UI Update
         self.overlay.set_stats(self._get_stats_dict())
-        self.overlay.update_timer("00:00")
+        
+        # Override Timer with "Menu" indicator
+        self.is_in_menu = True
+        self.overlay.update_timer("🏠 Menu")
         
         # Ensure we are ready for "Day 1" trigger
         logger.info("Run Resetted via Main Menu.")
@@ -1649,6 +1659,10 @@ class StateService(IStateService):
         self.start_time = time.time()
         self.last_phase_change_time = time.time() # Added to track delay
         self._check_rps_pause()
+        
+        # Start of Run clears Menu State
+        if index != -1:
+            self.is_in_menu = False
 
     def _check_rps_pause(self):
         if self.current_phase_index < 0: return
