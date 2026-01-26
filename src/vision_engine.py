@@ -185,7 +185,7 @@ class VisionEngine:
 
     def _load_char_template(self):
         try:
-            template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "templates", "char_select_template.png")
+            template_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "templates", "char_select_template.png")
             if os.path.exists(template_path):
                 self.char_template = cv2.imread(template_path, cv2.IMREAD_COLOR) # Color matching for menu?
                 if self.char_template is None:
@@ -203,7 +203,7 @@ class VisionEngine:
 
     def _load_icon_template(self):
         try:
-            template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "rune_icon_template.png")
+            template_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "rune_icon_template.png")
             if os.path.exists(template_path):
                 self.icon_template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
                 if self.config.get("debug_mode"):
@@ -306,12 +306,17 @@ class VisionEngine:
                     TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=7, variables=tess_vars),
                     TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=7, variables=tess_vars)
                 ]
+                # self.tess_pool_main = []
                 # Keep reference for legacy code
-                self.tess_api_main = self.tess_pool_main[0]
+                if self.tess_pool_main:
+                    self.tess_api_main = self.tess_pool_main[0]
+                else:
+                    self.tess_api_main = None
                 
                 # 2. Secondary Engine: Stats (Digits ONLY)
                 allowlist_stats = "0123456789"
                 self.tess_api_secondary = TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_stats, psm=7)
+                # self.tess_api_secondary = None
                 
                 if self.config.get("debug_mode"):
                     print(f"VISION: High-performance Parallel Tesseract API loaded (3 workers).")
@@ -542,12 +547,12 @@ class VisionEngine:
             region = (left, top, right, bottom)
             
             # Use BetterCam
-            if self.camera:
-                img = self.camera.grab(region=region)
-                if img is not None:
-                     # BetterCam returns RGB or BGR? 
-                     # Usually RGB. OpenCV wants BGR.
-                     return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            # if self.camera:
+            #     img = self.camera.grab(region=region)
+            #     if img is not None:
+            #          # BetterCam returns RGB or BGR? 
+            #          # Usually RGB. OpenCV wants BGR.
+            #          return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
             
             # Fallback to MSS
             monitor = {
@@ -815,30 +820,43 @@ class VisionEngine:
              found, conf = self.detect_char_screen(self.last_raw_frame)
              
              if found:
-                 # 2. Burst Confirmation (User Request: "5 fois de suite rapidement")
-                 # We need to capture fresh frames for this.
-                 if self.config.get("debug_mode"): print(f"Char Screen Candidate ({conf:.2f}). Verifying...")
-                 
+                 # 2. Burst Confirmation
+                 # Use MSS (self.sct) explicitly to avoid BetterCam multi-threading issues
                  confirm_count = 0
                  reg = self.config.get("char_region", {})
                  
-                 for _ in range(5):
-                     # Capture fresh small region
-                     frame = self.capture_screen() # Captures override or full monitor?
-                     # capture_screen respects region_override. We should set it temporarily or just use detect_char_screen on full frame?
-                     # detect_char_screen takes full frame and crops.
-                     # efficient way: override region to char_region, capture, match.
-                     
-                     # Simpler: Just capture full frame 5 times (overhead 5x 50ms = 250ms, acceptable)
-                     # Or rely on loop? No, loop is slow (200ms). Burst must be fast.
-                     
-                     if frame is None: continue
-                     f_found, f_conf = self.detect_char_screen(frame)
-                     if f_found: confirm_count += 1
-                     # Sleep tiny bit?
-                     # time.sleep(0.05) 
+                 # Prepare monitor dict for MSS
+                 mon = self.config.get("monitor_region", {})
+                 left = int(reg.get("left", 0))
+                 top = int(reg.get("top", 0))
+                 width = int(reg.get("width", 50))
+                 height = int(reg.get("height", 50))
+                 mss_monitor = {"top": top, "left": left, "width": width, "height": height}
                  
-                 # Consensus: 4/5 or 3/5? User said "5 fois de suite". Let's say 4/5.
+                 for _ in range(5):
+                     try:
+                         sct_img = self.sct.grab(mss_monitor)
+                         frame = np.array(sct_img)
+                         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                         
+                         # Check strict match on this fresh frame
+                         # We can pass frame directly to detect_char_screen
+                         # BUT detect_char_screen expects FULL FRAME and slices it based on config.
+                         # Here we captured ONLY the region.
+                         # So we should match directly.
+                         
+                         res = cv2.matchTemplate(frame, self.char_template, cv2.TM_CCOEFF_NORMED)
+                         _, max_val, _, _ = cv2.minMaxLoc(res)
+                         
+                         if max_val > 0.8: 
+                            confirm_count += 1
+                     except Exception as e:
+                         pass
+                     
+                     # Tiny sleep to allow screen update
+                     time.sleep(0.02)
+                 
+                 # Consensus: 4/5
                  if confirm_count >= 4:
                      if self.config.get("debug_mode"): print(f"Char Screen CONFIRMED ({confirm_count}/5).")
                      self.char_callback(True, conf)

@@ -57,6 +57,10 @@ class VisionService(IVisionService):
         if self.engine:
             self.engine.update_runes_icon_region(region)
 
+    def set_char_callback(self, callback: Callable[[bool, float], None]) -> None:
+        if self.engine:
+            self.engine.set_char_callback(callback)
+
     def scan_victory_region(self):
         if self.engine:
             return self.engine.scan_victory_region()

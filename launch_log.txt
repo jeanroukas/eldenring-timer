@@ -1,11 +1,26 @@
-Time: 19:51:33,05 
-2026-01-26 19:51:33,765 - EldenRingTimer - INFO - AudioService: Initializing...
-2026-01-26 19:51:33,794 - EldenRingTimer - INFO - StateService: Initializing...
-2026-01-26 19:51:33,797 - EldenRingTimer - INFO - StateService: Config updated. Auto-Hibernate: False
-2026-01-26 19:51:33,797 - EldenRingTimer - INFO - [SESSION LOG] SESSION_STARTED: {'run_count': 186, 'phase': 'STARTUP', 'level': 1}
-2026-01-26 19:51:33,798 - EldenRingTimer - INFO - StateService: Registering hotkeys...
-2026-01-26 19:51:33,897 - EldenRingTimer - INFO - StateService: Starting background loop...
-2026-01-26 19:51:33,915 - EldenRingTimer - INFO - StateService: Initialization Complete.
-2026-01-26 19:51:35,025 - EldenRingTimer - INFO - [SESSION LOG] SYSTEM_RESOURCE_STATS: {'cpu': 0.0, 'ram': 62.9}
-2026-01-26 19:51:35,043 - EldenRingTimer - INFO - AudioService: Worker thread ready. 4 voices found.
-^C
+Time: 20:11:11,49 
+2026-01-26 20:11:12,186 - EldenRingTimer - INFO - AudioService: Initializing...
+2026-01-26 20:11:12,203 - EldenRingTimer - INFO - StateService: Initializing...
+Starting Services...
+VISION: High-performance Parallel Tesseract API loaded (3 workers).
+VISION: Rune Icon Template not found. Icon detection disabled.
+VISION: Character Template not found at C:\Users\lprad\Documents\Python Scripts\data\templates\char_select_template.png. Char detection disabled.
+DatabaseService: Connected to data/stats.db
+Vision Engine: Monitoring started with Multi-Instance Strategy. Debug Mode: True
+Vision Engine: Secondary Worker started (Level/Runes).
+Traceback (most recent call last):
+  File "C:\Users\lprad\Documents\Python Scripts\Elden ring timer\main.py", line 244, in <module>
+    launcher.run()
+  File "C:\Users\lprad\Documents\Python Scripts\Elden ring timer\main.py", line 154, in run
+    self.start_application()
+  File "C:\Users\lprad\Documents\Python Scripts\Elden ring timer\main.py", line 240, in start_application
+    self.container.initialize_all()
+  File "C:\Users\lprad\Documents\Python Scripts\Elden ring timer\src\service_container.py", line 31, in initialize_all
+    service.initialize()
+  File "C:\Users\lprad\Documents\Python Scripts\Elden ring timer\src\services\state_service.py", line 127, in initialize
+    self.vision.set_char_callback(self.on_char_screen_detected)
+AttributeError: 'VisionService' object has no attribute 'set_char_callback'
+ObjectCache(00007ff829146600)::~ObjectCache(): WARNING! LEAK! object 000002c4779b7400 still has count 4 (id C:\Program Files\Tesseract-OCR\tessdata/eng.traineddatalstm-punc-dawg)
+ObjectCache(00007ff829146600)::~ObjectCache(): WARNING! LEAK! object 000002c477a092b0 still has count 4 (id C:\Program Files\Tesseract-OCR\tessdata/eng.traineddatalstm-word-dawg)
+ObjectCache(00007ff829146600)::~ObjectCache(): WARNING! LEAK! object 000002c4779b7d60 still has count 4 (id C:\Program Files\Tesseract-OCR\tessdata/eng.traineddatalstm-number-dawg)
+CRASHED with code 1 
