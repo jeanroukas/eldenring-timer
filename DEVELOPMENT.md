@@ -55,6 +55,7 @@ Total "Day" duration is 14 minutes, divided into 4 phases:
   - **Logic**:
     - **Fuzzy Logic**: Uses `difflib` for Day detection (Smart Typo acceptance, >70% similarity).
     - **Context Awareness**: Boss Phases heavily bias acceptance of next-day triggers.
+    - **Conditional Scanning**: "Character Screen" detection is ONLY active if "Rune Icon" is missing (Optimization).
   - **Consensus**: "Rolling Buffer" (2.5s window) checks for stable reads before firing triggers.
 
 ---

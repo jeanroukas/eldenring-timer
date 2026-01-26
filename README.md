@@ -10,6 +10,7 @@ This application monitors your gameplay in real-time, detecting specific trigger
 
 - **Automatic Cycle Detection**: Uses OCR (Tesseract) to read "Day" banners with fuzzy logic.
 - **Smart Timer**: Tracks "Storm", "Shrinking", and "Boss" phases.
+- **Auto-Reset**: Automatically detects "Character Selection" screen to reset the run (supports Rage Quit vs Victory logic).
 - **Advanced Graph Analytics**: Tracks "Total Lifetime Wealth" with stability logic (Ratchet) to prevent OCR glitches.
 - **Stat-Based Death Detection**: Strict validation of deaths (Level drop + Runes lost) to prevent false positives.
 - **Visual Overlay**: Non-intrusive, always-on-top overlay with high-contrast text.

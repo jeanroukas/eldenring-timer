@@ -178,6 +178,29 @@ class VisionEngine:
         self.icon_template = None
         self._load_icon_template()
 
+        # Char Select Matching
+        self.char_template = None
+        self.char_callback = None
+        self._load_char_template()
+
+    def _load_char_template(self):
+        try:
+            template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "templates", "char_select_template.png")
+            if os.path.exists(template_path):
+                self.char_template = cv2.imread(template_path, cv2.IMREAD_COLOR) # Color matching for menu?
+                if self.char_template is None:
+                     # Fallback to grayscale if color failed or intended
+                     self.char_template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+                
+                if self.config.get("debug_mode"):
+                    print(f"VISION: Loaded Character Template from {template_path}")
+            else:
+                if self.config.get("debug_mode"):
+                    print(f"VISION: Character Template not found at {template_path}. Char detection disabled.")
+        except Exception as e:
+            print(f"Error loading char template: {e}")
+
+
     def _load_icon_template(self):
         try:
             template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "rune_icon_template.png")
@@ -316,6 +339,10 @@ class VisionEngine:
 
     def set_runes_callback(self, callback):
         self.runes_callback = callback
+        
+    def set_char_callback(self, callback):
+        self.char_callback = callback
+
 
     def update_config(self, new_config):
         """Updates configuration."""
@@ -737,6 +764,88 @@ class VisionEngine:
 
         self._process_numeric_region(self.runes_region, self.runes_callback, "Runes")
 
+    def detect_char_screen(self, img_bgr):
+        """
+        Checks if the Character Select Screen is present.
+        Returns (True/False, confidence).
+        """
+        if self.char_template is None:
+            return False, 0.0
+            
+        reg = self.config.get("char_region", {})
+        if not reg or reg.get("width", 0) == 0:
+            return False, 0.0
+            
+        # Extract Region
+        mon = self.config.get("monitor_region", {})
+        left = reg.get("left", 0) - mon.get("left", 0)
+        top = reg.get("top", 0) - mon.get("top", 0)
+        w = reg.get("width", 50)
+        h = reg.get("height", 50)
+        
+        if img_bgr is None: return False, 0.0
+        
+        fh, fw = img_bgr.shape[:2]
+        if left < 0 or top < 0 or (left+w) > fw or (top+h) > fh:
+            return False, 0.0
+            
+        roi = img_bgr[top:top+h, left:left+w]
+        
+        # Use simple diff or template matching?
+        # Since config region matches template exactly (captured from it),
+        # matchTemplate should be perfect at (0,0) of ROI relative to template? 
+        # Actually template IS the ROI.
+        # But we captured template from screen.
+        # Let's use matchTemplate of template AGAINST roi.
+        
+        # Determine Color or Gray
+        if len(self.char_template.shape) == 3:
+             # Color match
+             res = cv2.matchTemplate(roi, self.char_template, cv2.TM_CCOEFF_NORMED)
+        else:
+             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+             res = cv2.matchTemplate(gray, self.char_template, cv2.TM_CCOEFF_NORMED)
+             
+        _, max_val, _, _ = cv2.minMaxLoc(res)
+        return max_val > 0.8, max_val
+
+    def _process_char_detection(self):
+         if self.last_raw_frame is not None:
+             # 1. Single Fast Check
+             found, conf = self.detect_char_screen(self.last_raw_frame)
+             
+             if found:
+                 # 2. Burst Confirmation (User Request: "5 fois de suite rapidement")
+                 # We need to capture fresh frames for this.
+                 if self.config.get("debug_mode"): print(f"Char Screen Candidate ({conf:.2f}). Verifying...")
+                 
+                 confirm_count = 0
+                 reg = self.config.get("char_region", {})
+                 
+                 for _ in range(5):
+                     # Capture fresh small region
+                     frame = self.capture_screen() # Captures override or full monitor?
+                     # capture_screen respects region_override. We should set it temporarily or just use detect_char_screen on full frame?
+                     # detect_char_screen takes full frame and crops.
+                     # efficient way: override region to char_region, capture, match.
+                     
+                     # Simpler: Just capture full frame 5 times (overhead 5x 50ms = 250ms, acceptable)
+                     # Or rely on loop? No, loop is slow (200ms). Burst must be fast.
+                     
+                     if frame is None: continue
+                     f_found, f_conf = self.detect_char_screen(frame)
+                     if f_found: confirm_count += 1
+                     # Sleep tiny bit?
+                     # time.sleep(0.05) 
+                 
+                 # Consensus: 4/5 or 3/5? User said "5 fois de suite". Let's say 4/5.
+                 if confirm_count >= 4:
+                     if self.config.get("debug_mode"): print(f"Char Screen CONFIRMED ({confirm_count}/5).")
+                     self.char_callback(True, conf)
+                 else:
+                     if self.config.get("debug_mode"): print(f"Char Screen REJECTED ({confirm_count}/5).")
+
+
 
     def request_runes_burst(self) -> List[int]:
         """
@@ -1001,13 +1110,28 @@ class VisionEngine:
                         if self.config.get("debug_mode"):
                             print(f"Level OCR (Thread) Error: {e}")
 
-                # 2. Runes OCR
-                if self.runes_region:
-                    try:
-                        self._process_runes_ocr()
-                    except Exception as e:
-                         if self.config.get("debug_mode"):
-                            print(f"Runes OCR (Thread) Error: {e}")
+                # 2. Runes & Icon Check
+                is_icon_visible = False
+                if self.runes_region and self.last_raw_frame is not None:
+                     # Check Icon Visibility first
+                     is_icon_visible, _ = self.detect_rune_icon(self.last_raw_frame)
+                     
+                     if is_icon_visible:
+                         # ICON VISIBLE: Game Interface Active -> Check Runes
+                         try:
+                             self._process_numeric_region(self.runes_region, self.runes_callback, "Runes")
+                         except Exception as e:
+                             if self.config.get("debug_mode"): print(f"Runes OCR Error: {e}")
+                     else:
+                         # ICON MISSING: Potential Menu/Char Select -> Check Char Detect
+                         # 3. Char Select Detection (Only if Icon Missing)
+                         if self.char_template is not None and self.char_callback:
+                            try:
+                                self._process_char_detection()
+                            except Exception as e:
+                                 if self.config.get("debug_mode"): print(f"Char Detect Error: {e}")
+
+
 
                 # Maintain approx 5Hz frequency (User Request: "ne s'actualise pas assez vite")
                 elapsed = time.time() - loop_start
