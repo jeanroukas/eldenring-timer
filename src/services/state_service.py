@@ -881,15 +881,23 @@ class StateService(IStateService):
     def on_menu_screen_detected(self, found, confidence):
         """
         Callback when Main Menu screen is detected.
-        Triggers a full reset (Ready for Day 1).
+        Shows menu indicator and optionally triggers reset.
         """
-        if not found: return
+        if not found: 
+            return
         
-        # Debounce: If we are already in 'Waiting', ignore (to avoid spamming resets)
+        logger.info(f"MAIN MENU DETECTED ({confidence:.2f})")
+        
+        # Always set menu indicator
+        self.is_in_menu = True
+        self.overlay.update_timer("🏠 Menu")
+        
+        # Only reset if we're in an active run (not already in Waiting state)
         if self.current_phase_index == -1: 
+            logger.info("Already in Waiting state, skipping reset")
             return
 
-        logger.info(f"MAIN MENU DETECTED ({confidence:.2f}). Resetting Run.")
+        logger.info("Resetting run...")
         
         # Determine valid session end reason (Victory vs Reset/Death)
         reason = "RESET"
@@ -901,12 +909,7 @@ class StateService(IStateService):
              self.db.end_session(self.current_session_id, reason)
              self.current_session_id = -1
 
-        # Full Reset Logic (Same as initial startup)
-        # We call Trigger(0) or equivalent to go to Day 1 Waiting
-        # But we also need to clear graphs, history, ui.
-        # Check if reset_run exists or use manual reset.
-        
-        # Manual Reset Sequence
+        # Full Reset Logic
         self.current_phase_index = -1
         self.Trigger(-1) # -1 = Waiting/Ready
         
@@ -922,12 +925,7 @@ class StateService(IStateService):
         # Force UI Update
         self.overlay.set_stats(self._get_stats_dict())
         
-        # Override Timer with "Menu" indicator
-        self.is_in_menu = True
-        self.overlay.update_timer("🏠 Menu")
-        
-        # Ensure we are ready for "Day 1" trigger
-        logger.info("Run Resetted via Main Menu.")
+        logger.info("Run reset complete")
 
     def on_level_detected(self, level: int, confidence: float = 100.0):
         # Valid range check (assuming max level 713)
