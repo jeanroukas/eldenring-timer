@@ -190,6 +190,60 @@
                 "cpu": 17.2,
                 "ram": 78.8
             }
+        },
+        {
+            "timestamp": 1769456433.8090456,
+            "time_str": "20:40:33",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 22.0,
+                "ram": 78.9
+            }
+        },
+        {
+            "timestamp": 1769456443.8742,
+            "time_str": "20:40:43",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 20.7,
+                "ram": 78.3
+            }
+        },
+        {
+            "timestamp": 1769456453.9116256,
+            "time_str": "20:40:53",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 20.8,
+                "ram": 78.7
+            }
+        },
+        {
+            "timestamp": 1769456463.9583514,
+            "time_str": "20:41:03",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 25.8,
+                "ram": 79.1
+            }
+        },
+        {
+            "timestamp": 1769456473.968193,
+            "time_str": "20:41:13",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 21.7,
+                "ram": 78.7
+            }
+        },
+        {
+            "timestamp": 1769456484.0342207,
+            "time_str": "20:41:24",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 26.9,
+                "ram": 80.5
+            }
         }
     ]
 }

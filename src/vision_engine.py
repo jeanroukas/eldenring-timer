@@ -773,9 +773,10 @@ class VisionEngine:
 
         self._process_numeric_region(self.runes_region, self.runes_callback, "Runes")
 
-    def detect_menu_screen(self, img_bgr):
+    def detect_menu_screen(self, img_bgr=None):
         """
         Checks if the Main Menu Screen is present.
+        Uses GLOBAL coordinates (not relative to monitor_region) for multi-monitor support.
         Returns (True/False, confidence).
         """
         if self.menu_template is None:
@@ -784,79 +785,64 @@ class VisionEngine:
         reg = self.config.get("menu_region", {})
         if not reg or reg.get("width", 0) == 0:
             return False, 0.0
-            
-        # Extract Region
-        mon = self.config.get("monitor_region", {})
-        left = reg.get("left", 0) - mon.get("left", 0)
-        top = reg.get("top", 0) - mon.get("top", 0)
-        w = reg.get("width", 50)
-        h = reg.get("height", 50)
         
-        if img_bgr is None: return False, 0.0
-        
-        fh, fw = img_bgr.shape[:2]
-        if left < 0 or top < 0 or (left+w) > fw or (top+h) > fh:
+        # IMPORTANT: Use GLOBAL coordinates directly (like capture_menu_template.py)
+        # This fixes multi-monitor setups where menu_region is on a different screen
+        try:
+            with mss.mss() as sct:
+                monitor = {
+                    "top": reg.get("top", 0),
+                    "left": reg.get("left", 0),
+                    "width": reg.get("width", 50),
+                    "height": reg.get("height", 50)
+                }
+                
+                sct_img = sct.grab(monitor)
+                img = np.array(sct_img)
+                roi = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                
+                # Template matching
+                if len(self.menu_template.shape) == 3:
+                    # Color match
+                    res = cv2.matchTemplate(roi, self.menu_template, cv2.TM_CCOEFF_NORMED)
+                else:
+                    # Grayscale match
+                    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                    res = cv2.matchTemplate(gray, self.menu_template, cv2.TM_CCOEFF_NORMED)
+                    
+                _, max_val, _, _ = cv2.minMaxLoc(res)
+                return max_val > 0.8, max_val
+                
+        except Exception as e:
+            if self.config.get("debug_mode"):
+                logger.error(f"Menu detection error: {e}")
             return False, 0.0
-            
-        roi = img_bgr[top:top+h, left:left+w]
-        
-        # Determine Color or Gray
-        if len(self.menu_template.shape) == 3:
-             # Color match
-             res = cv2.matchTemplate(roi, self.menu_template, cv2.TM_CCOEFF_NORMED)
-        else:
-             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-             res = cv2.matchTemplate(gray, self.menu_template, cv2.TM_CCOEFF_NORMED)
-             
-        _, max_val, _, _ = cv2.minMaxLoc(res)
-        return max_val > 0.8, max_val
 
     def _process_menu_detection(self):
-         if self.last_raw_frame is not None:
-             # 1. Single Fast Check
-             found, conf = self.detect_menu_screen(self.last_raw_frame)
+         # 1. Single Fast Check using global coordinates
+         found, conf = self.detect_menu_screen()
+         
+         if found:
+             # 2. Burst Confirmation (5 frames)
+             confirm_count = 0
              
-             if found:
-                 # 2. Burst Confirmation
-                 # Use MSS (self.sct) explicitly to avoid BetterCam multi-threading issues
-                 # [CRITICAL WARNING]: DO NOT USE self.capture_screen() or self.camera HERE.
-                 # BetterCam (DXGI) is not thread-safe and will crash the application if called
-                 # from this secondary thread while the main thread is running. 
-                 # ALWAYS use MSS (self.sct) for background thread captures.
-                 confirm_count = 0
-                 reg = self.config.get("menu_region", {})
+             for _ in range(5):
+                 try:
+                     found_burst, conf_burst = self.detect_menu_screen()
+                     if found_burst: 
+                        confirm_count += 1
+                 except Exception as e:
+                     pass
                  
-                 # Prepare monitor dict for MSS
-                 mon = self.config.get("monitor_region", {})
-                 left = int(reg.get("left", 0))
-                 top = int(reg.get("top", 0))
-                 width = int(reg.get("width", 50))
-                 height = int(reg.get("height", 50))
-                 mss_monitor = {"top": top, "left": left, "width": width, "height": height}
-                 
-                 for _ in range(5):
-                     try:
-                         sct_img = self.sct.grab(mss_monitor)
-                         frame = np.array(sct_img)
-                         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-                         
-                         res = cv2.matchTemplate(frame, self.menu_template, cv2.TM_CCOEFF_NORMED)
-                         _, max_val, _, _ = cv2.minMaxLoc(res)
-                         
-                         if max_val > 0.8: 
-                            confirm_count += 1
-                     except Exception as e:
-                         pass
-                     
-                     # Tiny sleep to allow screen update
-                     time.sleep(0.02)
-                 
-                 # Consensus: 4/5
-                 if confirm_count >= 4:
-                     if self.config.get("debug_mode"): print(f"Menu Screen CONFIRMED ({confirm_count}/5).")
-                     self.menu_callback(True, conf)
-                 else:
-                     if self.config.get("debug_mode"): print(f"Menu Screen REJECTED ({confirm_count}/5).")
+                 # Tiny sleep to allow screen update
+                 time.sleep(0.02)
+             
+             # Consensus: 4/5
+             if confirm_count >= 4:
+                 if self.config.get("debug_mode"): print(f"Menu Screen CONFIRMED ({confirm_count}/5).")
+                 self.menu_callback(True, conf)
+             else:
+                 if self.config.get("debug_mode"): print(f"Menu Screen REJECTED ({confirm_count}/5).")
 
 
 
@@ -1119,14 +1105,18 @@ class VisionEngine:
         while self.secondary_running:
             try:
                 loop_start = time.time()
+                # Local counter for this thread (initialized via modulo logic or simple time check)
+                # We'll just rely on time.time() for 10s logs actually? Or just int(time.time())
+                current_sec = int(time.time())
                 
                 # 1. Runes & Icon Check (PRIORITY: Determine Menu State first)
                 is_icon_visible = False
                 if self.runes_region and self.last_raw_frame is not None:
                      # Check Icon Visibility first
-                     is_icon_visible, _ = self.detect_rune_icon(self.last_raw_frame)
+                     is_icon_visible, icon_conf = self.detect_rune_icon(self.last_raw_frame)
                      
                      if is_icon_visible:
+                         if current_sec % 5 == 0: logger.info(f"DEBUG: Icon Visible (Conf: {icon_conf:.2f}) -> Skipped Menu")
                          # ICON VISIBLE: Game Interface Active -> Not Menu
                          self.is_in_menu_state = False
                          try:
@@ -1134,6 +1124,7 @@ class VisionEngine:
                          except Exception as e:
                              if self.config.get("debug_mode"): print(f"Runes OCR Error: {e}")
                      else:
+                         if current_sec % 5 == 0: logger.info("DEBUG: Icon Missing -> Checking Menu...")
                          # ICON MISSING: Potential Menu/Char Select -> Check Char Detect
                          # 2. Main Menu Detection (Only if Icon Missing)
                          if self.menu_template is not None and self.menu_callback:
@@ -1141,7 +1132,8 @@ class VisionEngine:
                                 # We check menu detection logic
                                 # Note: _process_menu_detection handles the burst and callback
                                 # We just need to capture the state for optimization
-                                found_menu, _ = self.detect_menu_screen(self.last_raw_frame)
+                                found_menu, menu_conf = self.detect_menu_screen()
+                                if current_sec % 5 == 0: logger.info(f"DEBUG: Menu Check: {found_menu} (Conf: {menu_conf:.2f})")
                                 
                                 if found_menu:
                                      # Let the burst logic confirm it properly in _process_menu_detection
