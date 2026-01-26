@@ -180,6 +180,7 @@ class VisionEngine:
 
         # Optimize State
         self.is_in_menu_state = False
+        self.last_menu_check_time = 0  # Throttle for burst confirmation
         
         # Char Select / Menu Matching
         self.menu_template = None
@@ -822,6 +823,9 @@ class VisionEngine:
          # 1. Single Fast Check using global coordinates
          found, conf = self.detect_menu_screen()
          
+         if self.config.get("debug_mode"):
+             logger.info(f"Menu Burst Check Starting (initial conf: {conf:.2f})")
+         
          if found:
              # 2. Burst Confirmation (5 frames)
              confirm_count = 0
@@ -1136,23 +1140,12 @@ class VisionEngine:
                                 if current_sec % 5 == 0: logger.info(f"DEBUG: Menu Check: {found_menu} (Conf: {menu_conf:.2f})")
                                 
                                 if found_menu:
-                                     # Let the burst logic confirm it properly in _process_menu_detection
-                                     self._process_menu_detection() 
-                                     # If confirmed, the callback fires. We set state here roughly.
-                                     # Actually _process_menu_detection confirms it.
-                                     # We should trust the result of _process_menu_detection better?
-                                     # But _process_menu_detection returns None.
+                                     # Throttle: Only run burst check every 2 seconds
+                                     now = time.time()
+                                     if now - self.last_menu_check_time > 2.0:
+                                         self.last_menu_check_time = now
+                                         self._process_menu_detection() 
                                      
-                                     # Let's rely on the raw check for the optimization state?
-                                     # If raw check is True, we assume Menu is likely, so we set State True.
-                                     # But if we set State True, the Main Thread pauses.
-                                     # If it's a False Positive, Main Thread pauses.
-                                     # Is that risky?
-                                     # Burst check inside _process_menu_detection is tight.
-                                     
-                                     # Let's set it only after Confirmation?
-                                     # But we want to skip OTHER OCRs "If this icon is visible".
-                                     # "detect_menu_screen" (max_val > 0.8) means Visible.
                                      self.is_in_menu_state = True
                                 else:
                                      self.is_in_menu_state = False
