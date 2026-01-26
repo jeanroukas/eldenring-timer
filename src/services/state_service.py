@@ -112,6 +112,8 @@ class StateService(IStateService):
         # Menu Detection State
         self.is_in_menu = False
         self._was_in_menu = False  # Track previous state for exit detection
+        self._menu_first_detected = 0  # Timestamp of first menu detection
+        self._menu_validated = False  # True after 3s of continuous detection
 
     def initialize(self) -> bool:
         logger.info("StateService: Initializing...")
@@ -898,20 +900,39 @@ class StateService(IStateService):
     def on_menu_screen_detected(self, found, confidence):
         """
         Callback when Main Menu screen is detected.
-        Shows menu indicator and optionally triggers reset.
+        Requires 3 seconds of continuous detection before setting menu state.
         """
-        if not found: 
+        now = time.time()
+        
+        if not found:
+            # Menu not detected - reset validation
+            self._menu_first_detected = 0
+            self._menu_validated = False
             return
         
         logger.info(f"MAIN MENU DETECTED ({confidence:.2f})")
         
-        # Always set menu indicator
-        self.is_in_menu = True
-        self.overlay.update_timer("🏠 Menu")
+        # Start or continue temporal validation
+        if self._menu_first_detected == 0:
+            self._menu_first_detected = now
+            logger.info("Menu detection started - waiting 3s for validation...")
+            return
+        
+        # Check if 3 seconds have passed
+        elapsed = now - self._menu_first_detected
+        if elapsed < 3.0:
+            logger.info(f"Menu validation in progress... ({elapsed:.1f}/3.0s)")
+            return
+        
+        # Validated! Set menu state (only once)
+        if not self._menu_validated:
+            logger.info("Menu VALIDATED after 3s - Setting menu state")
+            self._menu_validated = True
+            self.is_in_menu = True
+            self.overlay.update_timer("🏠 Menu")
         
         # Only reset if we're in an active run (not already in Waiting state)
         if self.current_phase_index == -1: 
-            logger.info("Already in Waiting state, skipping reset")
             return
 
         logger.info("Resetting run...")
