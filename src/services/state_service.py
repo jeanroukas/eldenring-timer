@@ -111,6 +111,7 @@ class StateService(IStateService):
         
         # Menu Detection State
         self.is_in_menu = False
+        self._was_in_menu = False  # Track previous state for exit detection
 
     def initialize(self) -> bool:
         logger.info("StateService: Initializing...")
@@ -593,10 +594,26 @@ class StateService(IStateService):
                 self.overlay.update_timer(f"{timer_str}")
 
             else:
-                 if getattr(self, "is_in_menu", False):
+                 # Detect menu exit (transition from Menu to Game)
+                 is_currently_in_menu = getattr(self, "is_in_menu", False)
+                 was_previously_in_menu = getattr(self, "_was_in_menu", False)
+                 
+                 if is_currently_in_menu:
                       self.overlay.update_timer("🏠 Menu")
                  else:
                       self.overlay.update_timer("00:00")
+                      
+                 # Detect transition: Menu (True) -> Game (False)
+                 if was_previously_in_menu and not is_currently_in_menu:
+                     logger.info("Menu exit detected - Resetting stats for fresh start")
+                     self.current_run_level = 1
+                     self.current_runes = 0
+                     self.last_display_level = 1
+                     self.last_display_runes = 0
+                     
+                 # Update previous state for next iteration
+                 self._was_in_menu = is_currently_in_menu
+                     
                  # Force stats update to show "Waiting" in Phase Name area
                  self.update_runes_display(self.current_run_level)
                  
