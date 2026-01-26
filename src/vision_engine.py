@@ -178,6 +178,9 @@ class VisionEngine:
         self.icon_template = None
         self._load_icon_template()
 
+        # Optimize State
+        self.is_in_menu_state = False
+        
         # Char Select / Menu Matching
         self.menu_template = None
         self.char_callback = None # Keep callback name generic or rename? Renaming to menu_callback for consistency.
@@ -997,6 +1000,11 @@ class VisionEngine:
         
         while self.running:
             try:
+                # OPTIMIZATION: If Main Menu is detected by secondary thread, SKIP Day OCR loop.
+                if self.is_in_menu_state:
+                    time.sleep(0.5)
+                    continue
+
                 loop_start = time.perf_counter()
                 
                 # 1. Cooldown Check (Global Pause)
@@ -1112,34 +1120,61 @@ class VisionEngine:
             try:
                 loop_start = time.time()
                 
-                # 1. Level OCR
-                if self.level_region:
-                    try:
-                        self._process_level_ocr()
-                    except Exception as e:
-                        if self.config.get("debug_mode"):
-                            print(f"Level OCR (Thread) Error: {e}")
-
-                # 2. Runes & Icon Check
+                # 1. Runes & Icon Check (PRIORITY: Determine Menu State first)
                 is_icon_visible = False
                 if self.runes_region and self.last_raw_frame is not None:
                      # Check Icon Visibility first
                      is_icon_visible, _ = self.detect_rune_icon(self.last_raw_frame)
                      
                      if is_icon_visible:
-                         # ICON VISIBLE: Game Interface Active -> Check Runes
+                         # ICON VISIBLE: Game Interface Active -> Not Menu
+                         self.is_in_menu_state = False
                          try:
                              self._process_numeric_region(self.runes_region, self.runes_callback, "Runes")
                          except Exception as e:
                              if self.config.get("debug_mode"): print(f"Runes OCR Error: {e}")
                      else:
                          # ICON MISSING: Potential Menu/Char Select -> Check Char Detect
-                         # 3. Main Menu Detection (Only if Icon Missing)
+                         # 2. Main Menu Detection (Only if Icon Missing)
                          if self.menu_template is not None and self.menu_callback:
                             try:
-                                self._process_menu_detection()
+                                # We check menu detection logic
+                                # Note: _process_menu_detection handles the burst and callback
+                                # We just need to capture the state for optimization
+                                found_menu, _ = self.detect_menu_screen(self.last_raw_frame)
+                                
+                                if found_menu:
+                                     # Let the burst logic confirm it properly in _process_menu_detection
+                                     self._process_menu_detection() 
+                                     # If confirmed, the callback fires. We set state here roughly.
+                                     # Actually _process_menu_detection confirms it.
+                                     # We should trust the result of _process_menu_detection better?
+                                     # But _process_menu_detection returns None.
+                                     
+                                     # Let's rely on the raw check for the optimization state?
+                                     # If raw check is True, we assume Menu is likely, so we set State True.
+                                     # But if we set State True, the Main Thread pauses.
+                                     # If it's a False Positive, Main Thread pauses.
+                                     # Is that risky?
+                                     # Burst check inside _process_menu_detection is tight.
+                                     
+                                     # Let's set it only after Confirmation?
+                                     # But we want to skip OTHER OCRs "If this icon is visible".
+                                     # "detect_menu_screen" (max_val > 0.8) means Visible.
+                                     self.is_in_menu_state = True
+                                else:
+                                     self.is_in_menu_state = False
                             except Exception as e:
                                  if self.config.get("debug_mode"): print(f"Menu Detect Error: {e}")
+                                 self.is_in_menu_state = False
+
+                # 2. Level OCR (Only if NOT in Menu)
+                if not self.is_in_menu_state and self.level_region:
+                    try:
+                        self._process_level_ocr()
+                    except Exception as e:
+                        if self.config.get("debug_mode"):
+                            print(f"Level OCR (Thread) Error: {e}")
 
 
 
