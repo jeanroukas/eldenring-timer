@@ -176,6 +176,7 @@ To optimize performance and accuracy:
 - **Rule**: Main Menu Screen is checked **only if** the Rune Icon (gameplay HUD) is NOT visible.
 - **Burst Verification**: If the menu screen is detected tentatively (1Hz), we trigger a **5-frame rapid burst** (approx 200ms duration).
 - **Consensus**: We require **4 out of 5** frames to match the template before triggering a "Run Reset". This prevents false positives from UI fading or loading screens.
+- **UI Feedback**: Upon confirmation, the Timer Overlay displays **"🏠 Menu"** instead of "00:00" to provide clear visual confirmation that the auto-reset system is active. This state persists until "Day 1" starts.
 
 ### 2. Ideal Curve Delay
 
