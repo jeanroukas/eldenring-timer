@@ -11,7 +11,8 @@ The application is an **Event-Driven OCR Overlay** utilizing a **Service-Oriente
 Managed by a Dependency Injection container (`ServiceContainer`).
 
 1. **`IConfigService`**: Manages persistence of `config.json`.
-2. **`IVisionService`**: Wrapper for `VisionEngine`. Manages background capture and OCR strategy.
+2. **`IVisionService`**: Wrapper for `VisionEngine`.
+   > **⚠️ CRITICAL**: Must strictly expose ALL callback setters from `VisionEngine`. Failing to proxy a method (e.g., `set_char_callback`) causes startup crashes.
 3. **`IOverlayService`**: Manages the PyQt6 View (`ModernOverlay`).
 4. **`IStateService`**: The "Brain". Implements the State Machine and consensus algorithm for triggers.
 5. **`NightreignLogic`**: (New) Central static class encapsulating pure game invariants (Death, Graph Stability, Min Rune counts).
@@ -57,6 +58,9 @@ Total "Day" duration is 14 minutes, divided into 4 phases:
     - **Context Awareness**: Boss Phases heavily bias acceptance of next-day triggers.
     - **Conditional Scanning**: "Character Screen" detection is ONLY active if "Rune Icon" is missing (Optimization).
   - **Consensus**: "Rolling Buffer" (2.5s window) checks for stable reads before firing triggers.
+  - **Thread Safety**:
+    - **Main Thread**: Uses `BetterCam` (DXGI) for high-performance capture.
+    - **Secondary Thread**: **MUST USE `MSS`** for capture. `BetterCam` is not thread-safe and causes crashes if called concurrently.
 
 ---
 

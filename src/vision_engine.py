@@ -822,6 +822,10 @@ class VisionEngine:
              if found:
                  # 2. Burst Confirmation
                  # Use MSS (self.sct) explicitly to avoid BetterCam multi-threading issues
+                 # [CRITICAL WARNING]: DO NOT USE self.capture_screen() or self.camera HERE.
+                 # BetterCam (DXGI) is not thread-safe and will crash the application if called
+                 # from this secondary thread while the main thread is running. 
+                 # ALWAYS use MSS (self.sct) for background thread captures.
                  confirm_count = 0
                  reg = self.config.get("char_region", {})
                  

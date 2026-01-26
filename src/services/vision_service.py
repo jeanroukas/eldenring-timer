@@ -57,6 +57,10 @@ class VisionService(IVisionService):
         if self.engine:
             self.engine.update_runes_icon_region(region)
 
+    # [WARNING] ARCHITECTURE NOTE:
+    # This wrapper MUST expose all callback setters present in VisionEngine.
+    # Failure to add a proxy method here will cause an AttributeError in StateService
+    # during initialization. Please verify this when adding new detection features.
     def set_char_callback(self, callback: Callable[[bool, float], None]) -> None:
         if self.engine:
             self.engine.set_char_callback(callback)
