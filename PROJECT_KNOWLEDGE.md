@@ -173,8 +173,8 @@ The UI has been consolidated into a single "Unified Overlay" (`qt_overlay.py`) u
 
 To optimize performance and accuracy:
 
-- **Rule**: Character Selection Screen is checked **only if** the Rune Icon (gameplay HUD) is NOT visible.
-- **Burst Verification**: If the character screen is detected tentatively (1Hz), we trigger a **5-frame rapid burst** (approx 200ms duration).
+- **Rule**: Main Menu Screen is checked **only if** the Rune Icon (gameplay HUD) is NOT visible.
+- **Burst Verification**: If the menu screen is detected tentatively (1Hz), we trigger a **5-frame rapid burst** (approx 200ms duration).
 - **Consensus**: We require **4 out of 5** frames to match the template before triggering a "Run Reset". This prevents false positives from UI fading or loading screens.
 
 ### 2. Ideal Curve Delay

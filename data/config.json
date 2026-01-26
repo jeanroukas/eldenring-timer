@@ -37,7 +37,7 @@
         "width": 298,
         "height": 58
     },
-    "session_count": 188,
+    "session_count": 189,
     "unified_pos_x": 2779,
     "unified_pos_y": 34,
     "runes_icon_region": {
@@ -46,10 +46,10 @@
         "width": 40,
         "height": 41
     },
-    "char_region": {
-        "top": 47,
-        "left": 85,
-        "width": 162,
-        "height": 165
+    "menu_region": {
+        "top": 1995,
+        "left": 3353,
+        "width": 64,
+        "height": 63
     }
 }

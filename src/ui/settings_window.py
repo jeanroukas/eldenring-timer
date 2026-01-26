@@ -140,7 +140,7 @@ class SettingsWindow(QMainWindow):
         self.btn_select_runes_icon_region = QPushButton("Select Runes Icon Region")
         layout.addWidget(self.btn_select_runes_icon_region)
 
-        self.btn_select_char_region = QPushButton("Select Character Name Region (Startup)")
+        self.btn_select_char_region = QPushButton("Select Main Menu Region (Auto-Reset)")
         layout.addWidget(self.btn_select_char_region)
         
         layout.addStretch()

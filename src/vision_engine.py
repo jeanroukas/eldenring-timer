@@ -178,27 +178,28 @@ class VisionEngine:
         self.icon_template = None
         self._load_icon_template()
 
-        # Char Select Matching
-        self.char_template = None
-        self.char_callback = None
-        self._load_char_template()
+        # Char Select / Menu Matching
+        self.menu_template = None
+        self.char_callback = None # Keep callback name generic or rename? Renaming to menu_callback for consistency.
+        self._load_menu_template()
 
-    def _load_char_template(self):
+    def _load_menu_template(self):
         try:
-            template_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "templates", "char_select_template.png")
+            # Using same template name for now or new one? User said "refaire une capture".
+            # I will assume new capture will save to 'main_menu_template.png'.
+            template_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "templates", "main_menu_template.png")
             if os.path.exists(template_path):
-                self.char_template = cv2.imread(template_path, cv2.IMREAD_COLOR) # Color matching for menu?
-                if self.char_template is None:
-                     # Fallback to grayscale if color failed or intended
-                     self.char_template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+                self.menu_template = cv2.imread(template_path, cv2.IMREAD_COLOR) 
+                if self.menu_template is None:
+                     self.menu_template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
                 
                 if self.config.get("debug_mode"):
-                    print(f"VISION: Loaded Character Template from {template_path}")
+                    print(f"VISION: Loaded Menu Template from {template_path}")
             else:
                 if self.config.get("debug_mode"):
-                    print(f"VISION: Character Template not found at {template_path}. Char detection disabled.")
+                    print(f"VISION: Menu Template not found at {template_path}. Menu detection disabled.")
         except Exception as e:
-            print(f"Error loading char template: {e}")
+            print(f"Error loading menu template: {e}")
 
 
     def _load_icon_template(self):
@@ -345,8 +346,8 @@ class VisionEngine:
     def set_runes_callback(self, callback):
         self.runes_callback = callback
         
-    def set_char_callback(self, callback):
-        self.char_callback = callback
+    def set_menu_callback(self, callback):
+        self.menu_callback = callback
 
 
     def update_config(self, new_config):
@@ -769,15 +770,15 @@ class VisionEngine:
 
         self._process_numeric_region(self.runes_region, self.runes_callback, "Runes")
 
-    def detect_char_screen(self, img_bgr):
+    def detect_menu_screen(self, img_bgr):
         """
-        Checks if the Character Select Screen is present.
+        Checks if the Main Menu Screen is present.
         Returns (True/False, confidence).
         """
-        if self.char_template is None:
+        if self.menu_template is None:
             return False, 0.0
             
-        reg = self.config.get("char_region", {})
+        reg = self.config.get("menu_region", {})
         if not reg or reg.get("width", 0) == 0:
             return False, 0.0
             
@@ -796,28 +797,21 @@ class VisionEngine:
             
         roi = img_bgr[top:top+h, left:left+w]
         
-        # Use simple diff or template matching?
-        # Since config region matches template exactly (captured from it),
-        # matchTemplate should be perfect at (0,0) of ROI relative to template? 
-        # Actually template IS the ROI.
-        # But we captured template from screen.
-        # Let's use matchTemplate of template AGAINST roi.
-        
         # Determine Color or Gray
-        if len(self.char_template.shape) == 3:
+        if len(self.menu_template.shape) == 3:
              # Color match
-             res = cv2.matchTemplate(roi, self.char_template, cv2.TM_CCOEFF_NORMED)
+             res = cv2.matchTemplate(roi, self.menu_template, cv2.TM_CCOEFF_NORMED)
         else:
              gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-             res = cv2.matchTemplate(gray, self.char_template, cv2.TM_CCOEFF_NORMED)
+             res = cv2.matchTemplate(gray, self.menu_template, cv2.TM_CCOEFF_NORMED)
              
         _, max_val, _, _ = cv2.minMaxLoc(res)
         return max_val > 0.8, max_val
 
-    def _process_char_detection(self):
+    def _process_menu_detection(self):
          if self.last_raw_frame is not None:
              # 1. Single Fast Check
-             found, conf = self.detect_char_screen(self.last_raw_frame)
+             found, conf = self.detect_menu_screen(self.last_raw_frame)
              
              if found:
                  # 2. Burst Confirmation
@@ -827,7 +821,7 @@ class VisionEngine:
                  # from this secondary thread while the main thread is running. 
                  # ALWAYS use MSS (self.sct) for background thread captures.
                  confirm_count = 0
-                 reg = self.config.get("char_region", {})
+                 reg = self.config.get("menu_region", {})
                  
                  # Prepare monitor dict for MSS
                  mon = self.config.get("monitor_region", {})
@@ -843,13 +837,7 @@ class VisionEngine:
                          frame = np.array(sct_img)
                          frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
                          
-                         # Check strict match on this fresh frame
-                         # We can pass frame directly to detect_char_screen
-                         # BUT detect_char_screen expects FULL FRAME and slices it based on config.
-                         # Here we captured ONLY the region.
-                         # So we should match directly.
-                         
-                         res = cv2.matchTemplate(frame, self.char_template, cv2.TM_CCOEFF_NORMED)
+                         res = cv2.matchTemplate(frame, self.menu_template, cv2.TM_CCOEFF_NORMED)
                          _, max_val, _, _ = cv2.minMaxLoc(res)
                          
                          if max_val > 0.8: 
@@ -862,10 +850,10 @@ class VisionEngine:
                  
                  # Consensus: 4/5
                  if confirm_count >= 4:
-                     if self.config.get("debug_mode"): print(f"Char Screen CONFIRMED ({confirm_count}/5).")
-                     self.char_callback(True, conf)
+                     if self.config.get("debug_mode"): print(f"Menu Screen CONFIRMED ({confirm_count}/5).")
+                     self.menu_callback(True, conf)
                  else:
-                     if self.config.get("debug_mode"): print(f"Char Screen REJECTED ({confirm_count}/5).")
+                     if self.config.get("debug_mode"): print(f"Menu Screen REJECTED ({confirm_count}/5).")
 
 
 
@@ -1146,12 +1134,12 @@ class VisionEngine:
                              if self.config.get("debug_mode"): print(f"Runes OCR Error: {e}")
                      else:
                          # ICON MISSING: Potential Menu/Char Select -> Check Char Detect
-                         # 3. Char Select Detection (Only if Icon Missing)
-                         if self.char_template is not None and self.char_callback:
+                         # 3. Main Menu Detection (Only if Icon Missing)
+                         if self.menu_template is not None and self.menu_callback:
                             try:
-                                self._process_char_detection()
+                                self._process_menu_detection()
                             except Exception as e:
-                                 if self.config.get("debug_mode"): print(f"Char Detect Error: {e}")
+                                 if self.config.get("debug_mode"): print(f"Menu Detect Error: {e}")
 
 
 

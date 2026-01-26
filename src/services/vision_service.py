@@ -61,9 +61,9 @@ class VisionService(IVisionService):
     # This wrapper MUST expose all callback setters present in VisionEngine.
     # Failure to add a proxy method here will cause an AttributeError in StateService
     # during initialization. Please verify this when adding new detection features.
-    def set_char_callback(self, callback: Callable[[bool, float], None]) -> None:
+    def set_menu_callback(self, callback: Callable[[bool, float], None]) -> None:
         if self.engine:
-            self.engine.set_char_callback(callback)
+            self.engine.set_menu_callback(callback)
 
     def scan_victory_region(self):
         if self.engine:

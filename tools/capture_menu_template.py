@@ -16,9 +16,9 @@ def capture_template():
     with open(config_path, "r") as f:
         config = json.load(f)
         
-    region = config.get("char_region")
+    region = config.get("menu_region")
     if not region:
-        print("Error: char_region not found in config.json")
+        print("Error: menu_region not found in config.json")
         return
 
     # Create templates dir
@@ -30,7 +30,7 @@ def capture_template():
     width = int(region["width"])
     height = int(region["height"])
     
-    print(f"Capturing region: {region}")
+    print(f"Capturing Main Menu region: {region}")
     
     with mss.mss() as sct:
         # MSS handles global coordinates via the dictionary
@@ -50,7 +50,7 @@ def capture_template():
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
             
             # Save
-            save_path = "data/templates/char_select_template.png"
+            save_path = "data/templates/main_menu_template.png"
             cv2.imwrite(save_path, img)
             print(f"Successfully saved template to {save_path}")
             

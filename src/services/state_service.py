@@ -124,7 +124,7 @@ class StateService(IStateService):
         self.vision.add_observer(self.on_ocr_result)
         self.vision.add_level_observer(self.on_level_detected)
         self.vision.add_runes_observer(self.on_runes_detected)
-        self.vision.set_char_callback(self.on_char_screen_detected)
+        self.vision.set_menu_callback(self.on_menu_screen_detected)
 
         self.current_run_level = 1
         self.pending_level = None
@@ -871,9 +871,9 @@ class StateService(IStateService):
              self.victory_check_active = True
              self.schedule(int(self.victory_check_interval * 1000), self.check_victory_loop)
 
-    def on_char_screen_detected(self, found, confidence):
+    def on_menu_screen_detected(self, found, confidence):
         """
-        Callback when Character Selection screen is detected.
+        Callback when Main Menu screen is detected.
         Triggers a full reset (Ready for Day 1).
         """
         if not found: return
@@ -882,7 +882,7 @@ class StateService(IStateService):
         if self.current_phase_index == -1: 
             return
 
-        logger.info(f"CHARACTER SCREEN DETECTED ({confidence:.2f}). Resetting Run.")
+        logger.info(f"MAIN MENU DETECTED ({confidence:.2f}). Resetting Run.")
         
         # Determine valid session end reason (Victory vs Reset/Death)
         reason = "RESET"
@@ -917,7 +917,7 @@ class StateService(IStateService):
         self.overlay.update_timer("00:00")
         
         # Ensure we are ready for "Day 1" trigger
-        logger.info("Run Resetted via Character Screen.")
+        logger.info("Run Resetted via Main Menu.")
 
     def on_level_detected(self, level: int, confidence: float = 100.0):
         # Valid range check (assuming max level 713)
