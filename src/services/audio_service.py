@@ -5,6 +5,7 @@ import asyncio
 import tempfile
 import os
 import winsound
+import pythoncom
 from winsdk.windows.media.speechsynthesis import SpeechSynthesizer
 from winsdk.windows.storage.streams import DataReader
 from src.services.base_service import IAudioService, IConfigService
@@ -63,6 +64,13 @@ class AudioService(IAudioService):
         self.queue.put(None) # Sentinel
         if self.worker_thread:
             self.worker_thread.join(timeout=2.0)
+            
+        # Cleanup temp files
+        if hasattr(self, '_temp_files'):
+            for f in self._temp_files:
+                try: os.remove(f)
+                except: pass
+            self._temp_files = []
 
     def announce(self, text: str) -> None:
         if not self.enabled:
@@ -134,147 +142,162 @@ class AudioService(IAudioService):
             with open(path, "wb") as f:
                 f.write(audio_buffer)
                 
-            # Play
-            winsound.PlaySound(path, winsound.SND_FILENAME)
+            # Play Async to prevent blocking the worker thread (which might hold GIL/IO)
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
             
-            # Cleanup
-            try:
-                os.remove(path)
-            except: pass
+            # Defer cleanup (keep last few files or clean on shutdown)
+            # We add to a cleanup list
+            if not hasattr(self, '_temp_files'): self._temp_files = []
+            self._temp_files.append(path)
+            
+            # Cleanup old files (> 10)
+            if len(self._temp_files) > 10:
+                oldest = self._temp_files.pop(0)
+                try: os.remove(oldest)
+                except: pass
+            
+        except Exception as e:
+            logger.error(f"AudioService: WinRT Speak Error: {e}")
             
         except Exception as e:
             logger.error(f"AudioService: WinRT Speak Error: {e}")
 
 
     def _worker(self):
-        # Clear list to start fresh
-        self.available_voices = []
-        
-        # 1. Device Enumeration (Once at startup)
+        # Initialize COM for this thread (Required for SAPI5/pyttsx3)
+        pythoncom.CoInitialize()
         try:
-             # Temp engine for enumeration
-             temp_engine = pyttsx3.init()
-             try:
-                 driver = temp_engine.proxy._driver
-                 if hasattr(driver, '_tts'):
-                     outputs = driver._tts.GetAudioOutputs()
-                     for i in range(outputs.Count):
-                         item = outputs.Item(i)
-                         desc = item.GetDescription()
-                         dev_id = item.Id
-                         self.available_devices.append((dev_id, desc))
-             except Exception as e:
-                 logger.error(f"AudioService: Error enumerating devices: {e}")
-             
-             # Enumerate SAPI5 Voices (Filtered)
-             sapi_voices = []
-             seen_ids = set()
-             try:
-                 voices = temp_engine.getProperty('voices')
-                 for v in voices:
-                     # Filter for French
-                     if "french" in v.name.lower() or "français" in v.name.lower() or "hortense" in v.name.lower():
-                         if v.id not in seen_ids:
-                             sapi_voices.append((v.id, v.name))
-                             seen_ids.add(v.id)
-             except Exception as e:
-                 logger.error(f"AudioService: Error enumerating voices: {e}")
-                 
-             del temp_engine
-             
-             # Enumerate WinRT Voices
-             winrt_voices = []
-             try:
-                 # Pass seen_ids to check against SAPI too (though keys differ) or just for WinRT dupes
-                 asyncio.run(self._enumerate_winrt_voices(winrt_voices, seen_ids))
-             except Exception as e:
-                  logger.error(f"AudioService: Failed to run WinRT enumeration: {e}")
-
-             # SORTING: Natural Voices FIRST
-             self.available_voices = winrt_voices + sapi_voices
-             
-        except Exception as e:
-             logger.error(f"AudioService: Error in startup enumeration: {e}")
-             
-        self.devices_ready_event.set()
-        logger.info(f"AudioService: Worker thread ready. {len(self.available_voices)} voices found.")
-
-        while self.running:
+            # Clear list to start fresh
+            self.available_voices = []
+            
+            # 1. Device Enumeration (Once at startup)
             try:
-                task = self.queue.get(timeout=0.5) # Check run flag periodically
-                if task is None:
-                    break
-                
-                # Speak with fresh engine
+                # Temp engine for enumeration
+                temp_engine = pyttsx3.init()
                 try:
-                    logger.debug(f"AudioService: Speaking '{task}'...")
+                    driver = temp_engine.proxy._driver
+                    if hasattr(driver, '_tts'):
+                        outputs = driver._tts.GetAudioOutputs()
+                        for i in range(outputs.Count):
+                            item = outputs.Item(i)
+                            desc = item.GetDescription()
+                            dev_id = item.Id
+                            self.available_devices.append((dev_id, desc))
+                except Exception as e:
+                    logger.error(f"AudioService: Error enumerating devices: {e}")
+                
+                # Enumerate SAPI5 Voices (Filtered)
+                sapi_voices = []
+                seen_ids = set()
+                try:
+                    voices = temp_engine.getProperty('voices')
+                    for v in voices:
+                        # Filter for French
+                        if "french" in v.name.lower() or "français" in v.name.lower() or "hortense" in v.name.lower():
+                            if v.id not in seen_ids:
+                                sapi_voices.append((v.id, v.name))
+                                seen_ids.add(v.id)
+                except Exception as e:
+                    logger.error(f"AudioService: Error enumerating voices: {e}")
                     
-                    # 1. Determine Provider
-                    target_voice = self.config.get("audio_voice_id", "")
+                del temp_engine
+                
+                # Enumerate WinRT Voices
+                winrt_voices = []
+                try:
+                    # Pass seen_ids to check against SAPI too (though keys differ) or just for WinRT dupes
+                    asyncio.run(self._enumerate_winrt_voices(winrt_voices, seen_ids))
+                except Exception as e:
+                     logger.error(f"AudioService: Failed to run WinRT enumeration: {e}")
+
+                # SORTING: Natural Voices FIRST
+                self.available_voices = winrt_voices + sapi_voices
+                
+            except Exception as e:
+                 logger.error(f"AudioService: Error in startup enumeration: {e}")
+                 
+            self.devices_ready_event.set()
+            logger.info(f"AudioService: Worker thread ready. {len(self.available_voices)} voices found.")
+
+            while self.running:
+                try:
+                    task = self.queue.get(timeout=0.5) # Check run flag periodically
+                    if task is None:
+                        break
                     
-                    rate = int(self.config.get("audio_rate", 165))
-                    volume = self.config.get("audio_volume", 50) / 100.0
-                    
-                    if target_voice.startswith("WINRT:"):
-                        # Use WinRT
-                        try:
-                            asyncio.run(self._speak_winrt(task, target_voice, rate, volume))
-                        except Exception as e:
-                             logger.error(f"AudioService: Asyncio run failed: {e}")
-                    else:
-                        # Use SAPI5 (Legacy)
-                        engine = pyttsx3.init()
+                    # Speak with fresh engine
+                    try:
+                        logger.debug(f"AudioService: Speaking '{task}'...")
                         
-                        # Setup Voice
-                        selected_voice = None
-                        if target_voice and not target_voice.startswith("WINRT:"):
-                            selected_voice = target_voice
+                        # 1. Determine Provider
+                        target_voice = self.config.get("audio_voice_id", "")
+                        
+                        rate = int(self.config.get("audio_rate", 165))
+                        volume = self.config.get("audio_volume", 50) / 100.0
+                        
+                        if target_voice.startswith("WINRT:"):
+                            # Use WinRT
+                            try:
+                                asyncio.run(self._speak_winrt(task, target_voice, rate, volume))
+                            except Exception as e:
+                                 logger.error(f"AudioService: Asyncio run failed: {e}")
                         else:
-                            # Auto-select French from SAPI pool if WinRT failed or not selected
-                            voices = engine.getProperty('voices')
-                            for v in voices:
-                                if "Hortense" in v.name:
-                                    selected_voice = v.id
-                                    break
-                            if not selected_voice:
+                            # Use SAPI5 (Legacy)
+                            engine = pyttsx3.init()
+                            
+                            # Setup Voice
+                            selected_voice = None
+                            if target_voice and not target_voice.startswith("WINRT:"):
+                                selected_voice = target_voice
+                            else:
+                                # Auto-select French from SAPI pool if WinRT failed or not selected
+                                voices = engine.getProperty('voices')
                                 for v in voices:
-                                    if "french" in v.name.lower() or "français" in v.name.lower():
+                                    if "Hortense" in v.name:
                                         selected_voice = v.id
                                         break
-                                        
-                        if selected_voice:
-                            try:
-                                engine.setProperty('voice', selected_voice)
-                            except: pass
+                                if not selected_voice:
+                                    for v in voices:
+                                        if "french" in v.name.lower() or "français" in v.name.lower():
+                                            selected_voice = v.id
+                                            break
+                                            
+                            if selected_voice:
+                                try:
+                                    engine.setProperty('voice', selected_voice)
+                                except: pass
 
-                        # Setup Properties
-                        engine.setProperty('rate', rate)
-                        engine.setProperty('volume', volume)
+                            # Setup Properties
+                            engine.setProperty('rate', rate)
+                            engine.setProperty('volume', volume)
+                            
+                            # Setup Device check
+                            device_id = self.config.get("audio_device_id", "")
+                            if device_id:
+                                 try:
+                                     driver = engine.proxy._driver
+                                     # ... existing device logic
+                                     if hasattr(driver, '_tts'):
+                                         outputs = driver._tts.GetAudioOutputs()
+                                         for i in range(outputs.Count):
+                                             if outputs.Item(i).Id == device_id:
+                                                 driver._tts.AudioOutput = outputs.Item(i)
+                                                 break
+                                 except: pass
+
+                            engine.say(task)
+                            engine.runAndWait()
+                            del engine
                         
-                        # Setup Device check
-                        device_id = self.config.get("audio_device_id", "")
-                        if device_id:
-                             try:
-                                 driver = engine.proxy._driver
-                                 # ... existing device logic
-                                 if hasattr(driver, '_tts'):
-                                     outputs = driver._tts.GetAudioOutputs()
-                                     for i in range(outputs.Count):
-                                         if outputs.Item(i).Id == device_id:
-                                             driver._tts.AudioOutput = outputs.Item(i)
-                                             break
-                             except: pass
-
-                        engine.say(task)
-                        engine.runAndWait()
-                        del engine
+                        logger.debug(f"AudioService: Finished speaking '{task}'")
+                    except Exception as e:
+                        logger.error(f"AudioService: Error speaking '{task}': {e}")
                     
-                    logger.debug(f"AudioService: Finished speaking '{task}'")
+                    self.queue.task_done()
+                except queue.Empty:
+                    continue
                 except Exception as e:
-                    logger.error(f"AudioService: Error speaking '{task}': {e}")
-                
-                self.queue.task_done()
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"AudioService: Worker loop error: {e}")
+                    logger.error(f"AudioService: Worker loop error: {e}")
+                    
+        finally:
+            pythoncom.CoUninitialize()

@@ -14,7 +14,8 @@ Managed by a Dependency Injection container (`ServiceContainer`).
 2. **`IVisionService`**: Wrapper for `VisionEngine`. Manages background capture and OCR strategy.
 3. **`IOverlayService`**: Manages the PyQt6 View (`ModernOverlay`).
 4. **`IStateService`**: The "Brain". Implements the State Machine and consensus algorithm for triggers.
-5. **`ITrayService`**: Manages the system tray icon and background persistence.
+5. **`NightreignLogic`**: (New) Central static class encapsulating pure game invariants (Death, Graph Stability, Min Rune counts).
+6. **`ITrayService`**: Manages the system tray icon and background persistence.
 
 ### Data Flow
 
@@ -51,7 +52,9 @@ Total "Day" duration is 14 minutes, divided into 4 phases:
 - **Engine**: Tesseract OCR (`--psm 7`).
 - **Strategy**:
   - **Preprocessing**: Auto-resize (160px height), Gamma (0.5), Otsu Thresholding.
-  - **Logic**: No fuzzy mapping. Trust raw, cleaned output.
+  - **Logic**:
+    - **Fuzzy Logic**: Uses `difflib` for Day detection (Smart Typo acceptance, >70% similarity).
+    - **Context Awareness**: Boss Phases heavily bias acceptance of next-day triggers.
   - **Consensus**: "Rolling Buffer" (2.5s window) checks for stable reads before firing triggers.
 
 ---

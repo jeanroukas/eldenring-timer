@@ -25,8 +25,11 @@ The application tracks progress through defined game phases. Transitions are tri
   - Effect: **Reset Level to 1**. Reset timer. Start new Session Log (`Run_N_Storm...`). Reset RPS history (40s).
 - **Day 2 (Storm)**:
   - Triggers: "JOUR II", "JOUR 2", "JOURII".
+  - **Prerequisite**: Must be in **Boss 1 Phase** (Index 4).
 - **Day 3 (Preparation & Final Boss)**:
   - Triggers: "JOUR III", "JOUR 3", "JOURIII".
+  - **Prerequisite**: Must be in **Boss 2 Phase** (Index 9).
+  - *Boosted OCR*: Weights for "JOUR III" are heavily boosted to overcome Day 1/2 noise.
 - **Boss Phases**:
   - **Boss 1 & 2**: RPS calculation and graph progress are **PAUSED** to keep farm statistics accurate.
 - **Victory Condition**:
@@ -67,18 +70,24 @@ The model now better reflects game reality by separating **Farming Progress** (C
 
 ### Tracking Logic
 
-- **Total Runes Accumulés**: `Runes Dépensées (Niveaux)` + `Runes Dépensées (Marchands)` + `Runes Actuelles`.
+- **Total Runes Accumulés (UI/Graphe)**: `Runes Dépensées (Niveaux)` + `Runes Actuelles` + `lost_runes_pending`.
+  - *Note*: Cette formule est dite "Puissance Effective". Elle n'inclut PAS les dépenses marchandes ni les pertes permanentes, afin d'afficher des "trous" de progression sur le graphique.
+- **Total Wealth (Log Session)**: Somme brute incluant marchands et pertes.
 - **Merchant Spending**: Detected when `current_runes` decreases while Level remained stable.
 
-### 🛡️ "Triple Lock" Death Logic
+### 🛡️ "Stat-Based" Death Logic (Revised Jan 2026)
 
-To prevent false positives (e.g., OCR misreading Level 3 as 2), a death is **ONLY** validated if ALL three conditions are met simultaneously:
+To deal with variable localizations and OCR reliability, we moved from text-based detection ("VOUS AVEZ PERI") to a **Strict Stat Interaction Model**:
 
-1. 📉 **Level Drop**: The Level decreases (e.g., 3 -> 2).
-2. 💰 **Strict 0 Runes**: The Rune count reading must be **EXACTLY 0**.
-    - If Runes > 0, the level drop is assumed to be an OCR glitch and is IGNORED.
-3. ⚫ **Recent Black Screen**: A "Black Screen" event (Fade-out/Fade-in) must have ended within the last **12 seconds**.
-    - This confirms the game actually reset the player.
+**Death Condition**:
+
+1. 📉 **Level Drop**: The Level decreases EXACTLY by 1 (e.g., 9 -> 8).
+    - Drops > 1 are rejected as OCR errors.
+2. 💰 **Runes -> Zero**: The Rune count drops to **< 50**.
+    - We allow small non-zero values (e.g., 8, 42) to account for OCR noise on the dark screen background.
+    - If Runes stay high (e.g., 1000+), the Level Drop is rejected as an OCR error.
+
+*Note: Black Screen detection is still tracked but no longer mandatory for the trigger, to avoid missing deaths where the screen doesn't go fully black or timing is off.*
 
 ### ♻️ "All or Nothing" Recovery Logic
 
@@ -89,6 +98,10 @@ To prevent false positives (e.g., OCR misreading Level 3 as 2), a death is **ONL
 - **Double Death**: If a new death occurs while `lost_runes_pending > 0`, those pending runes are moved to `permanent_loss` but remain in the "Total Accumulated" graph to reflect total lifetime wealth.
 
 ---
+
+- [x] **Phase 8: Graph Strategy (Effective Wealth)** <!-- id: 33 -->
+  - [x] Implement "Effective Wealth" formula for Graph <!-- id: 34 -->
+  - [x] Add `total_wealth` vs `effective_wealth` toggle logic <!-- id: 35 -->
 
 ## 🖥️ UI Architecture: "Unified Dashboard"
 
@@ -135,6 +148,26 @@ The UI has been consolidated into a single "Unified Overlay" (`qt_overlay.py`) u
 - Identify and SUM any spending events.
 - **REVERT** them from `spent_at_merchants` (assume they paid for the level).
 - Log: "Reverted X spending due to Level Up".
+- **Deep Graph Repair**: Repairs the last **60 seconds** of history (previously 10s) effectively erasing long-standing "Ghost" dips caused by glitches.
+
+### 5. Graph Stability (The "Ratchet")
+
+**Issue**: Random OCR noise (e.g., `7774` -> `7174`) caused temporary dips in the Total Runes graph.
+**Fix**:
+
+- **Monotonicity Rule**: The "Green Curve" (Total Runes) is **LOCKED** and cannot drop.
+- **Exceptions**: Valid Death or Merchant Spend events imply a drop; these are handled explicitly.
+- **Suspicious Drop Filter**: Drops involving a single-digit change are held as "Uncertain" for 15s+.
+
+### 6. Fuzzy Logic Strategy (`difflib`)
+
+**Issue**: Day banners often have typos (e.g., "JOOR" instead of "JOUR") due to font rendering.
+**Fix**:
+
+- **Algorithm**: python `difflib.SequenceMatcher`.
+- **Threshold**: Similarity > **0.7** (70%).
+- **Noise Filter**: Text length must be < 20 chars to reject long sentences.
+- **Context**: If Phase is "Boss 1", we accept "JOUR" (or similar) as "Day 2" immediately.
 
 ### 2. Ideal Curve Delay
 

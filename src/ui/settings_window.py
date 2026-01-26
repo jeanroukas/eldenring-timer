@@ -136,6 +136,12 @@ class SettingsWindow(QMainWindow):
         
         self.btn_select_runes_region = QPushButton("Select Runes Region")
         layout.addWidget(self.btn_select_runes_region)
+
+        self.btn_select_runes_icon_region = QPushButton("Select Runes Icon Region")
+        layout.addWidget(self.btn_select_runes_icon_region)
+
+        self.btn_select_char_region = QPushButton("Select Character Name Region (Startup)")
+        layout.addWidget(self.btn_select_char_region)
         
         layout.addStretch()
         self.tabs.addTab(tab, "Capture")

@@ -8,8 +8,10 @@ This application monitors your gameplay in real-time, detecting specific trigger
 
 ## Features
 
-- **Automatic Cycle Detection**: Uses OCR (Tesseract) to read "Day" banners.
+- **Automatic Cycle Detection**: Uses OCR (Tesseract) to read "Day" banners with fuzzy logic.
 - **Smart Timer**: Tracks "Storm", "Shrinking", and "Boss" phases.
+- **Advanced Graph Analytics**: Tracks "Total Lifetime Wealth" with stability logic (Ratchet) to prevent OCR glitches.
+- **Stat-Based Death Detection**: Strict validation of deaths (Level drop + Runes lost) to prevent false positives.
 - **Visual Overlay**: Non-intrusive, always-on-top overlay with high-contrast text.
 - **Audio Cues**: Beeps for critical phase changes and countdowns.
 - **System Tray Integration**: Run in background, accessible via system tray.
@@ -45,5 +47,6 @@ This application monitors your gameplay in real-time, detecting specific trigger
 Edit `config.json` or use the "Settings" option in the system tray menu to adjust:
 
 - **Monitor Region**: Select the screen area where the "Day" text appears.
+- **Character Name Region**: Select the area to detect character selection (for auto-reset).
 - **Volume**: Adjust audio feedback volume.
 - **Debug Options**: Enable/disable debug images and logs.

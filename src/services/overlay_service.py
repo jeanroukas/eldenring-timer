@@ -52,47 +52,65 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
             pass 
 
     def show(self) -> None:
-        if not self.unified_overlay:
+        # If called from main thread (init), direct call is best.
+        # If called from background, simple schedule.
+        self.schedule(0, lambda: self._safe_show())
+
+    def _safe_show(self):
+        try:
+            if not self.unified_overlay:
+                self.create_overlay()
+            if self.unified_overlay:
+                self.unified_overlay.show()
+        except RuntimeError:
             self.create_overlay()
-        self.unified_overlay.show()
+            self.unified_overlay.show()
 
     def hide(self) -> None:
-        if self.unified_overlay:
-            self.unified_overlay.hide()
+        self.schedule(0, lambda: self.unified_overlay.hide() if self.unified_overlay else None)
     
     def update_timer(self, text: str) -> None:
-        if self.unified_overlay:
-            self.unified_overlay.set_timer_text(text)
+        self.schedule(0, lambda: self.unified_overlay.set_timer_text(text) if self.unified_overlay else None)
 
     def update_status(self, text: str) -> None:
-        # Map generic status updates to timer text if appropriate, or ignore
-        if self.unified_overlay:
-            self.unified_overlay.set_timer_text(text)
+        self.schedule(0, lambda: self.unified_overlay.set_timer_text(text) if self.unified_overlay else None)
     
     def update_run_stats(self, stats: dict) -> None:
-        if self.unified_overlay:
-            self.unified_overlay.set_stats(stats)
+        # Clone stats if needed? Dicts are passed by reference, but usually stats is a new dict from StateService
+        self.schedule(0, lambda: self.unified_overlay.set_stats(stats) if self.unified_overlay else None)
 
     def show_recording(self, show: bool):
         self.is_recording = show
-        if self.unified_overlay:
-            self.unified_overlay.is_recording = show
-            self.unified_overlay.update()
+        def _u():
+            if self.unified_overlay:
+                self.unified_overlay.is_recording = show
+                self.unified_overlay.update()
+        self.schedule(0, _u)
 
     def set_click_through(self, enabled: bool) -> None:
-        if self.unified_overlay:
-            self.unified_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
+        def _u():
+            if self.unified_overlay:
+                self.unified_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
+        self.schedule(0, _u)
 
     def set_ocr_score(self, score: float) -> None:
-        if self.unified_overlay:
-            self.unified_overlay.set_score(score)
+        self.schedule(0, lambda: self.unified_overlay.set_score(score) if self.unified_overlay else None)
 
     def schedule(self, delay_ms: int, callback: Callable) -> None:
         """Schedule a callback on the UI thread."""
         self._schedule_signal.emit(delay_ms, callback)
 
     def _execute_schedule(self, delay_ms, callback):
+        def safe_callback():
+            try:
+                callback()
+            except RuntimeError:
+                # pass silently or re-create?
+                pass
+            except Exception as e:
+                print(f"Overlay Error: {e}")
+
         if delay_ms == 0:
-            callback()
+            safe_callback()
         else:
-            QTimer.singleShot(delay_ms, callback)
+            QTimer.singleShot(delay_ms, safe_callback)

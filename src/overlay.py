@@ -244,18 +244,17 @@ class Overlay:
                 timer_str = f"{mins:02}:{secs:02}"
                 
                 # Audio Beeps (Shrinking warning and Final Countdown)
-                # Beep at 30s, 10s, 3s, 2s, 1s
-                # Use remaining_int to check exact seconds (needs state to avoid multi-beep)
-                if remaining_int in [30, 10, 3, 2, 1] and remaining_int != self.last_beep_second:
-                     # Different tone for final 3s?
-                     freq = 1500 if remaining_int <= 3 else 1000
-                     try:
-                         winsound.Beep(freq, 200)
-                     except: pass
-                     self.last_beep_second = remaining_int
+                # REMOVED PER USER REQUEST: "enlever les bip la ou il y a deja du text to speach"
+                # if remaining_int in [30, 10, 3, 2, 1] and remaining_int != self.last_beep_second:
+                #      # Different tone for final 3s?
+                #      freq = 1500 if remaining_int <= 3 else 1000
+                #      try:
+                #          winsound.Beep(freq, 200)
+                #      except: pass
+                #      self.last_beep_second = remaining_int
                 
-                if remaining_int not in [30, 10, 3, 2, 1]:
-                    self.last_beep_second = -1
+                # if remaining_int not in [30, 10, 3, 2, 1]:
+                #     self.last_beep_second = -1
 
             else:
                 # Stopwatch (Boss mode)

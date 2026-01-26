@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import QMainWindow, QApplication, QWidget
 from PyQt6.QtCore import Qt, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QFontMetrics, QPainterPath
+from src.services.rune_data import RuneData
 
 class DraggableWindow(QMainWindow):
     position_changed = pyqtSignal(int, int)
@@ -28,6 +29,16 @@ class DraggableWindow(QMainWindow):
 
     def mouseReleaseEvent(self, event):
         self.old_pos = None
+        
+        # Check for Graph Click (Bottom Area)
+        # Graph Y is ~160 to H-20. X is 20 to W-20
+        rect = self.rect()
+        graph_y = 160
+        if event.pos().y() > graph_y and event.pos().x() > 20 and event.pos().x() < rect.width()-20:
+             self.show_projection = not self.show_projection
+             self.update()
+             return
+
         self.position_changed.emit(self.x(), self.y())
 
 class UnifiedOverlay(DraggableWindow):
@@ -41,6 +52,7 @@ class UnifiedOverlay(DraggableWindow):
         self.timer_text = "00:00"
         self.ocr_score = 0.0
         self.is_recording = False
+        self.show_projection = False # Toggle for Graph View
         
         self.stats = {
             "level": 1,
@@ -62,7 +74,8 @@ class UnifiedOverlay(DraggableWindow):
             "grade": "C",
             "time_to_level": "---"
         }
-        
+    
+    # ... (Keep existing methods: set_timer_text, set_score, etc.) ...
     def set_timer_text(self, text):
         self.timer_text = text
         self.update()
@@ -89,6 +102,40 @@ class UnifiedOverlay(DraggableWindow):
         # Remove " - " to save space
         name = name.replace(" - ", " ")
         return name
+
+    def get_total_runes_for_level(self, level: int) -> int:
+        return RuneData.get_total_runes_for_level(level) or 0
+
+    def get_clean_history(self, history):
+        """
+        Simple outlier removal for the Green Curve.
+        Removes single-point spikes that do not sustain.
+        """
+        if len(history) < 3: return history
+        
+        cleaned = list(history)
+        # We only check internal points
+        for i in range(1, len(history) - 1):
+            prev = cleaned[i-1]
+            curr = cleaned[i]
+            nex = history[i+1] # Look ahead in original or cleaned? Original is safer for "next".
+            
+            # 1. Check for Spike (Up or Down)
+            # If current deviates signficantly from prev AND next is closer to prev
+            diff_prev = abs(curr - prev)
+            diff_next = abs(curr - nex)
+            
+            # Threshold: 10% change or > 5000 runes absolute?
+            # Let's say if jump is > 2000 and return is > 2000
+            if diff_prev > 2000 and diff_next > 2000:
+                # Check if we return somewhat to baseline
+                # If prev and next are close (within 20% of each other spread)
+                spread = abs(prev - nex)
+                if spread < diff_prev * 0.5: 
+                    # It was a spike, smooth it
+                    cleaned[i] = (prev + nex) / 2
+        
+        return cleaned
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -253,17 +300,17 @@ class UnifiedOverlay(DraggableWindow):
         painter.drawText(col3_x + 15, y_right, f"OCR: {int(self.ocr_score)}%")
 
         
-        if self.is_recording:
-             # Pulsing Red Dot for Recording
-             rec_x = col3_x + 90
-             rec_y = y_right - 10
-             painter.setBrush(QColor(255, 50, 50))
-             painter.drawEllipse(rec_x, rec_y, 8, 8)
-             
+
         y_right += row_height + 5
         
-        # Merch
+        # Current Runes (NEW)
+        curr_runes = self.stats.get("current_runes", 0)
         painter.setPen(color_text_white)
+        painter.drawText(col3_x, y_right, f"Runes: {curr_runes:,}")
+        y_right += row_height
+
+        # Merch
+        painter.setPen(color_text_dim) # Dimm merch
         painter.drawText(col3_x, y_right, f"Merch: {merch_spent:,}")
         y_right += row_height
         
@@ -288,168 +335,253 @@ class UnifiedOverlay(DraggableWindow):
         graph_w = w - 40
         graph_h = h - 180 # Padding bottom
         
-        # Dynamic Scaling
-        max_val = 100000 # Min scale
-        if history:
-            m = max(history)
-            if m > max_val: max_val = m * 1.1
-            
         # Draw Graph BG
         painter.setBrush(QColor(0, 0, 0, 100))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRect(graph_x, graph_y, graph_w, graph_h)
         
-        # Plot
-        if len(history) > 1:
-            max_val = max(1000, max(history), total_run) * 1.15
-            step_x = graph_w / (len(history) - 1)
-            
-            # --- DYNAMIC GRID ---
-            grid_step = 50000
-            if max_val > 500000: grid_step = 100000
-            
-            num_steps = int(max_val / grid_step)
-            
-            pen_grid = QPen(QColor(255, 255, 255, 30))
-            pen_grid.setStyle(Qt.PenStyle.DotLine)
-            painter.setPen(pen_grid)
-            font_grid = QFont("Helvetica", 8)
-            painter.setFont(font_grid)
-            
-            for i in range(1, num_steps + 1):
-                val = i * grid_step
-                if val > max_val: break
-                gy = graph_y + graph_h - (val / max_val * graph_h)
-                painter.drawLine(graph_x, int(gy), graph_x + graph_w, int(gy))
-                label_text = f"{int(val/1000)}k"
-                painter.drawText(graph_x + graph_w - 25, int(gy) - 2, label_text)
+        if not history:
+             painter.setFont(QFont("Cinzel", 10))
+             painter.setPen(color_text_dim)
+             painter.drawText(graph_x + 50, graph_y + graph_h // 2, "Waiting for run data...")
+             return
 
-            # --- IDEAL CURVE (Nightreign) ---
-            nr_config = self.stats.get("nr_config")
-            if nr_config:
-                goal = nr_config["goal"]
-                duration = nr_config["duration"]
-                exp = nr_config["snowball"]
+        # --- GRAPH MODE LOGIC ---
+        # MODE A: Real Time (Fit to current history len)
+        # MODE B: Projected (Fit to 40mins / 2400s)
+        
+        if self.show_projection:
+             # Total Projected: 28 mins (1680s) based on 14m Day Cycles
+             TOTAL_PROJECTED_TIME = 1680
+             x_range_max = max(len(history), TOTAL_PROJECTED_TIME)
+             y_range_max = max(1000, 550000) 
+             if total_run > y_range_max: y_range_max = total_run * 1.15
+        else:
+             x_range_max = max(60, len(history)) # Minimum 60s
+             # Dynamic Y for Real-Time (Zoomed)
+             y_range_max = max(1000, total_run * 1.2)
+        
+        step_x = graph_w / x_range_max
+        
+        # --- IDEAL CURVE (Piecewise) ---
+        nr_config = self.stats.get("nr_config")
+        if nr_config:
+            path_ideal = QPainterPath()
+            
+            # Sim parameters (Aligned with 14m Phases)
+            # Day 1: 14 mins (840s)
+            day1_dur = 840 
+            # Day 2: 14 mins (840s) for Farming
+            day2_dur = 840
+            
+            # Key Rune Targets
+            # Day 1 End: ~180k (Level 9.5 Goal)
+            runes_day1_end = 180881
+            # Boss 1 Drop: 50k
+            boss1_drop = 50000
+            # Day 2 Start = 230k
+            runes_day2_start = runes_day1_end + boss1_drop
+            # Day 2 End: Level 14 Goal (~437k)
+            runes_day2_end = 437578
+            
+            for t in range(x_range_max + 1):
+                val = 0
                 
-                # We need to map Graph X -> Time T -> Ideal Y
-                if len(history) > 1:
-                    path_ideal = QPainterPath()
-                    for i in range(len(history)):
-                        t_sec = i # Relative seconds from session start
-                        
-                        # Calculate Ideal (With 15s Offset)
-                        offset = 15.0
-                        if t_sec <= offset:
-                            ideal_val = 0
-                        else:
-                            effective_t = t_sec - offset
-                            effective_duration = 2400.0 # 40m fixed base
-                            
-                            # 1. Base Farming
-                            ratio = effective_t / effective_duration
-                            if ratio > 1.0: ratio = 1.0
-                            
-                            # Farming Goal (Total - Bosses) = 452116
-                            farming_goal = 452116 
-                            farming_val = farming_goal * (ratio ** exp)
-                            
-                            # 2. Boss Steps
-                            boss_bonus = 0
-                            day1_end = 1200.0
-                            day2_end = 2400.0
-                            
-                            if effective_t > day1_end: boss_bonus += 11000
-                            if effective_t > day2_end: boss_bonus += 50000
-                            
-                            ideal_val = farming_val + boss_bonus
-                        
-                        # Map to Screen
-                        px = graph_x + i * step_x
-                        py = graph_y + graph_h - (ideal_val / max_val * graph_h)
-                        
-                        if i == 0:
-                            path_ideal.moveTo(px, py)
-                        else:
-                            path_ideal.lineTo(px, py)
+                if t < day1_dur:
+                    # Phase 1: Day 1 (0 -> 14m)
+                    # Expo curve to target
+                    ratio = t / float(day1_dur)
+                    if ratio < 0: ratio = 0
+                    val = runes_day1_end * (ratio ** 1.2)
                     
-                    pen_ideal = QPen(QColor(255, 255, 255, 40)) # Faint Grey
-                    pen_ideal.setStyle(Qt.PenStyle.DashLine)
-                    pen_ideal.setWidth(2)
-                    painter.setPen(pen_ideal)
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawPath(path_ideal)
-
-            # --- PLOT ---
-            path = QPainterPath()
-            path.moveTo(graph_x, graph_y + graph_h)
-            for i, val in enumerate(history):
-                px = graph_x + i * step_x
-                py = graph_y + graph_h - (val / max_val * graph_h)
-                path.lineTo(px, py)
+                else:
+                    # Phase 2: Day 2 (14m -> 28m)
+                    # Starts higher (Jump), then exponential growth
+                    
+                    # Normalize t to 0..1 range for this phase
+                    phase_t = t - day1_dur
+                    ratio = phase_t / float(day2_dur)
+                    if ratio > 1.0: ratio = 1.0
+                    
+                    # Curve from Start to End
+                    val = runes_day2_start + (runes_day2_end - runes_day2_start) * (ratio ** 1.2)
                 
-            painter.setPen(QPen(color_gold, 2))
+                px = graph_x + t * step_x
+                py = graph_y + graph_h - (val / y_range_max * graph_h)
+                
+                if t == 0: path_ideal.moveTo(px, py)
+                else: path_ideal.lineTo(px, py)
+                
+            pen_ideal = QPen(QColor(255, 255, 255, 40)) 
+            pen_ideal.setStyle(Qt.PenStyle.DashLine)
+            pen_ideal.setWidth(2)
+            painter.setPen(pen_ideal)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path_ideal)
+
+        # --- RAW DATA PLOT (Background / Historical) ---
+        # "Garder le graphique actuel en orange foncé"
+        history_raw = self.stats.get("run_history_raw", [])
+        if history_raw:
+            path_raw = QPainterPath()
+            start_px = graph_x
+            start_py = graph_y + graph_h
+            path_raw.moveTo(start_px, start_py)
+            
+            valid_raw = False
+            for i, val in enumerate(history_raw):
+                # Ensure we don't exceed bounds if raw is longer than max (shouldn't be)
+                if i > x_range_max: break
+                
+                px = graph_x + i * step_x
+                py = graph_y + graph_h - (val / y_range_max * graph_h)
+                path_raw.lineTo(px, py)
+                valid_raw = True
+            
+            if valid_raw:
+                # User Request: "Orange très saturé mais alpha a 60%"
+                # 60% of 255 is approx 153
+                color_raw = QColor(255, 120, 0, 153) 
+                painter.setPen(QPen(color_raw, 3)) # User Request: Thicker (was 2)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPath(path_raw)
+
+        # Apply Cleaning to Green Curve
+        history_clean = self.get_clean_history(history)
+
+        path = QPainterPath()
+        path.moveTo(start_px, start_py)
+        
+        valid_points = False
+        for i, val in enumerate(history_clean):
+            px = graph_x + i * step_x
+            py = graph_y + graph_h - (val / y_range_max * graph_h)
+            path.lineTo(px, py)
+            valid_points = True
+            
+        if valid_points:
+            # CORRECTED GRAPH: THIN GREEN LINE (User Request)
+            # "passer ce graf en vert avec une ligne tres fine"
+            color_corrected = QColor(0, 255, 0, 255) # Pure Green
+            painter.setPen(QPen(color_corrected, 1)) # Width 1 (Very Thin)
+            
+            # User Request: "sans remplissage" (No Fill)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(path)
             
-            fill_path = QPainterPath(path)
-            fill_path.lineTo(graph_x + (len(history)-1) * step_x, graph_y + graph_h)
-            fill_path.lineTo(graph_x, graph_y + graph_h)
-            fill_path.closeSubpath()
-            grad = QColor(color_gold.red(), color_gold.green(), color_gold.blue(), 40)
-            painter.setBrush(grad)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawPath(fill_path)
+            # --- CURSOR LABEL (User Request) ---
+            # Show "3K" above the current point
+            if history:
+                curr_val = history[-1]
+                last_idx = len(history) - 1
+                px = graph_x + last_idx * step_x
+                py = graph_y + graph_h - (curr_val / y_range_max * graph_h)
+                
+                label_txt = f"{curr_val/1000:.1f}K"
+                painter.setFont(QFont("Helvetica", 9, QFont.Weight.Bold))
+                painter.setPen(color_gold)
+                
+                # Center text above point
+                fm = QFontMetrics(painter.font())
+                tw = fm.horizontalAdvance(label_txt)
+                painter.drawText(int(px - tw/2), int(py - 10), label_txt) 
+                
+                # Draw a little dot
+                painter.setBrush(color_gold)
+                painter.drawEllipse(QPoint(int(px), int(py)), 3, 3)
+
+        # --- LEVEL GRID LINES ---
+        painter.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt.PenStyle.DotLine))
+        painter.setFont(QFont("Helvetica", 8))
+        
+        # Key Levels: Dynamic based on Y-Range
+        # User request: "ne pas en afficher plus de 5"
+        visible_levels = []
+        # Optimization: Only check relevant range. 
+        # Start from current level? Or Level 1?
+        # Let's check levels 1 to 25 first (most common) then sparse.
+        
+        candidates = []
+        for l in range(1, 150):
+            req = self.get_total_runes_for_level(l)
+            if req > y_range_max: break # Optimization
+            if req > 0:
+                candidates.append((l, req))
+                
+        # Filter to max 5 items, prioritizing higher levels (targets) or spread?
+        # Let's try to keep them spread out.
+        if len(candidates) > 5:
+            # Always keep the highest fit (top target)
+            # Pick 5 evenly spaced indices
+            indices = set()
+            count = len(candidates)
+            if count > 0:
+                indices.add(count - 1) # Top
+                indices.add(0) # Bottom
+                # Middle ones
+                indices.add(count // 2) 
+                indices.add(count // 4)
+                indices.add(count * 3 // 4)
             
-            # --- MARKERS (💀, 💰, ⚔️) ---
-            start_t = self.stats.get("graph_start_time", 0)
-            if start_t > 0:
-                 # history length is approx duration in seconds (1 Hz)
-                 total_duration = len(history) # simplistic but robust enough
-                 if total_duration > 0:
-                     for evt in events:
-                         t_evt = evt.get("t", 0)
-                         bg_type = evt.get("type", "")
-                         
-                         relative_t = t_evt - start_t
-                         if 0 <= relative_t <= total_duration:
-                             # Map to X
-                             # pct = relative_t / total_duration
-                             # px = graph_x + pct * graph_w
-                             
-                             # More precisely:
-                             px = graph_x + (relative_t / total_duration) * graph_w
-                             
-                             # Icon
-                             icon = "❓"
-                             if bg_type == "DEATH": icon = "💀"
-                             elif bg_type == "RECOVERY": icon = "♻️"
-                             elif bg_type == "BOSS": icon = "⚔️"
-                             
-                             # Draw
-                             painter.setFont(QFont("Segoe UI Emoji", 12)) 
-                             painter.drawText(int(px) - 6, int(graph_y + graph_h) - 10, icon)
+            # Sort and take unique
+            final_indices = sorted(list(indices))
+            visible_levels = [candidates[i] for i in final_indices if i < count]
+            # Ensure max 5
+            visible_levels = visible_levels[-5:]
+        else:
+            visible_levels = candidates
 
-            # --- TRANSITIONS ---
-            for idx, day_name in transitions:
-                if idx < len(history):
-                    tx = int(graph_x + idx * step_x)
-                    if "DAY 2" in day_name:
-                        painter.setPen(QPen(color_amber, 1, Qt.PenStyle.DashLine))
-                        painter.drawLine(tx, graph_y, tx, graph_y + graph_h)
-                        painter.setPen(color_amber)
-                        painter.drawText(tx + 2, graph_y + 12, "D2")
-                    elif "DAY 3" in day_name:
-                        painter.setPen(QPen(QColor(255, 80, 80), 1, Qt.PenStyle.DashLine))
-                        painter.drawLine(tx, graph_y, tx, graph_y + graph_h)
-                        painter.setPen(QColor(255, 80, 80))
-                        painter.drawText(tx + 2, graph_y + 12, "D3")
+        for lvl_num, rune_cost in visible_levels:
+            gy = graph_y + graph_h - (rune_cost / y_range_max * graph_h)
+            
+            # Draw Horizontal line (User called them "barres verticales" but meant Y-axis levels)
+            painter.drawLine(graph_x, int(gy), graph_x + graph_w, int(gy))
+            painter.drawText(graph_x + graph_w - 25, int(gy) - 3, f"L{lvl_num}")
 
-        elif not is_max:
-             painter.setFont(QFont("Cinzel", 10))
-             painter.setPen(color_text_dim)
+        # --- VIEW LABEL ---
+        painter.setPen(color_text_dim)
+        painter.setFont(QFont("Helvetica", 9, QFont.Weight.Bold))
+        label = "VIEW: PROJECTION (40m)" if self.show_projection else "VIEW: REAL-TIME"
+        painter.drawText(graph_x + 10, graph_y + 20, label)
 
-             painter.drawText(graph_x + 50, graph_y + graph_h // 2, "Waiting for run data...")
-
+        # --- MARKERS ---
+        start_t = self.stats.get("graph_start_time", 0)
+        if start_t > 0 and len(history) > 0:
+             for evt in events:
+                 t_evt = evt.get("t", 0)
+                 bg_type = evt.get("type", "")
+                 
+                 relative_t = t_evt - start_t
+                 if relative_t < 0: continue
+                 
+                 # Clip if out of range in Zoomed Mode
+                 if not self.show_projection and relative_t > len(history): continue
+                 
+                 px = graph_x + relative_t * step_x
+                 
+                 icon = "❓"
+                 if bg_type == "DEATH": icon = "💀"
+                 elif bg_type == "RECOVERY": icon = "♻️"
+                 elif bg_type == "BOSS": icon = "⚔️"
+                 
+                 painter.setFont(QFont("Segoe UI Emoji", 12)) 
+                 painter.drawText(int(px) - 6, int(graph_y + graph_h) - 10, icon)
+                 
     def show_recording(self, show: bool):
         self.is_recording = show
         self.update()
+
+    def mouseReleaseEvent(self, event):
+        # Left Click: Toggle Graph Mode
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Check if click is in graph area (roughly bottom half)
+            rect = self.rect()
+            graph_y = 160
+            if event.position().y() > graph_y:
+                self.show_projection = not self.show_projection
+                self.update()
+        
+        # Right Click: Prevent Crash / Do Nothing
+        elif event.button() == Qt.MouseButton.RightButton:
+            event.accept() # Swallow event
+            pass

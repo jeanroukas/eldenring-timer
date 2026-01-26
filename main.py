@@ -14,6 +14,8 @@ from src.services.audio_service import AudioService
 from src.ui.region_selector import RegionSelector
 from src.ui.settings_window import SettingsWindow
 
+from src.ui.state_inspector import StateInspectorWindow
+
 # Set DPI Awareness
 try:
     # Try Per-Monitor V2 (Context -4)
@@ -161,7 +163,16 @@ class Launcher:
         self.settings.btn_select_region.clicked.connect(self.select_region)
         self.settings.btn_select_level_region.clicked.connect(self.select_level_region)
         self.settings.btn_select_runes_region.clicked.connect(self.select_runes_region)
+        self.settings.btn_select_runes_icon_region.clicked.connect(self.select_runes_icon_region)
+        self.settings.btn_select_char_region.clicked.connect(self.select_char_region)
         self.settings.show()
+
+    def show_inspector_ui(self):
+        if not hasattr(self, 'inspector_window') or self.inspector_window is None:
+            self.inspector_window = StateInspectorWindow(self.state_service)
+        self.inspector_window.show()
+        self.inspector_window.raise_()
+        self.inspector_window.activateWindow()
 
     def select_region(self):
         # Modern properties of PyQt Region Selector
@@ -178,6 +189,17 @@ class Launcher:
         self.selector = RegionSelector()
         self.selector.region_selected.connect(self.on_runes_region_selected)
         self.selector.show()
+
+    def select_runes_icon_region(self):
+        self.selector = RegionSelector()
+        self.selector.region_selected.connect(self.on_runes_icon_region_selected)
+        self.selector.show()
+
+    def select_char_region(self):
+        self.selector = RegionSelector()
+        self.selector.region_selected.connect(self.on_char_region_selected)
+        self.selector.show()
+        
         
     def on_region_selected(self, region):
         self.config_service.set("monitor_region", region)
@@ -199,6 +221,19 @@ class Launcher:
         self.vision_service.set_runes_region(region)
         print(f"Runes Region saved: {region}")
         self.settings.raise_()
+
+    def on_runes_icon_region_selected(self, region):
+        self.config_service.set("runes_icon_region", region)
+        self.vision_service.set_runes_icon_region(region)
+        print(f"Runes Icon Region saved: {region}")
+        self.settings.raise_()
+
+    def on_char_region_selected(self, region):
+        self.config_service.set("char_region", region)
+        # self.vision_service.set_char_region(region) # Future implementation
+        print(f"Character Region saved: {region}")
+        self.settings.raise_()
+
 
     def start_application(self):
         print("Starting Services...")

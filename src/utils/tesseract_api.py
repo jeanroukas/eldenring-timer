@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 
 class TesseractAPI:
-    def __init__(self, dll_path, tessdata_path, lang="fra"):
+    def __init__(self, dll_path, tessdata_path, lang="fra", allowlist=None, psm=7, variables=None):
         if not os.path.exists(dll_path):
             raise FileNotFoundError(f"Tesseract DLL not found at: {dll_path}")
         
@@ -37,10 +37,17 @@ class TesseractAPI:
         if self.lib.TessBaseAPIInit3(self.handle, datapath, language) != 0:
             raise RuntimeError("Could not initialize Tesseract API.")
             
-        # Optimization: Whitelist characters (based on project needs)
-        self.lib.TessBaseAPISetVariable(self.handle, b"tessedit_char_whitelist", b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-        # Optimization: PSM 7 (Single daily line)
-        self.lib.TessBaseAPISetVariable(self.handle, b"tessedit_pageseg_mode", b"7")
+        # Optimization: Apply configuration immediately
+        if allowlist:
+            self.lib.TessBaseAPISetVariable(self.handle, b"tessedit_char_whitelist", allowlist.encode('utf-8'))
+        
+        # Optimization: PSM
+        self.lib.TessBaseAPISetVariable(self.handle, b"tessedit_pageseg_mode", str(psm).encode('utf-8'))
+
+        # Apply custom variables
+        if variables:
+            for key, value in variables.items():
+                self.lib.TessBaseAPISetVariable(self.handle, key.encode('utf-8'), str(value).encode('utf-8'))
 
     def get_text(self, image):
         """Processes a grayscale NumPy image and returns (text, confidence)."""

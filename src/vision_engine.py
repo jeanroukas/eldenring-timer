@@ -5,12 +5,21 @@ import pytesseract
 import time
 import os
 import threading
+import unicodedata
+from fuzzywuzzy import fuzz
+import ctypes
+from ctypes import wintypes
+from enum import IntEnum
 
 import datetime
 import json
-from PIL import ImageGrab
+import bettercam
+import mss
+import mss.tools
+from PIL import Image
 import re
-from typing import List, Dict
+from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor
 from src.utils.tesseract_api import TesseractAPI
 from src.logger import logger
 
@@ -25,19 +34,53 @@ try:
 except ImportError:
     psutil = None
 
+class OCRPass(IntEnum):
+    OTSU = 0
+    ADAPTIVE = 1
+    INVERTED = 2
+    FIXED = 3
+
 class VisionEngine:
-    def __init__(self, config):
+    # Optimized String Constants
+    VALID_SHORT = frozenset(["1", "2", "3", "I", "II", "III", "IV", "V"])
+    RELEVANT_CHARS = frozenset(["J", "O", "U", "I", "1", "2", "3", "V", "F"])
+    BANNED_SIGNALS = frozenset(["OT", "S", "K", "SS", "OT."])
+
+    def __init__(self, config: Dict[str, Any]):
         self.config = config
+        self.debug_mode = config.get("debug_mode", False)
         self.running = False
         self.paused = False
         self.region = config.get("monitor_region", {})
         self.level_region = config.get("level_region", {})
+        self.level_region = config.get("level_region", {})
         self.runes_region = config.get("runes_region", {})
+        self.runes_icon_region = config.get("runes_icon_region", {})
         self.scan_delay = 0.2 # Default delay (Standard 5 FPS)
         
         self.last_raw_frame = None
-        self.last_frame_timestamp = 0
+        self.last_frame_timestamp = 0.0
+        self.region_override = None
+        self.secondary_running = False
+        
+        # Debug / Inspector State
+        self.last_ocr_text = ""
+        self.last_ocr_conf = 0.0
+        self.last_brightness = 0.0
+        self.suppress_ocr_until = 0
+        self.consecutive_garbage_frames = 0
+        self.is_low_power_mode = False
 
+        # Adaptive FPS State
+        self.last_activity_time = time.time()
+        self.adaptive_fps_enabled = True
+        self.base_scan_delay = 0.033 # 30 FPS target
+        self.power_save_delay = 0.2  # 5 FPS
+        
+        # Parallel OCR Pool
+        self.executor = ThreadPoolExecutor(max_workers=3)
+        self.tess_pool_main = []
+        
         # Initial parameter sync
         self.update_from_config()
 
@@ -94,11 +137,124 @@ class VisionEngine:
         self.skipped_scans = 0
         
         # High Performance Tesseract API (DLL)
-        self.tess_api = None
+        self.tess_api_main = None      # For Day Detection (A-Z, 0-9)
+        self.tess_api_secondary = None # For Stats (0-9 ONLY) - Very Fast
         self._init_tess_api()
 
+        # Define OCR passes configuration
+        self.ocr_passes = {
+            "standard": [
+                # Pass 1: Gamma 0.6 + Otsu (Robust for general lighting)
+                {"type": OCRPass.OTSU, "val": 0, "scale": 1.0, "gamma": 0.6},
+                # Pass 2: Gamma 0.6 + Fixed 220 (Optimized for bright text)
+                {"type": OCRPass.FIXED, "val": 220, "scale": 1.0, "gamma": 0.6},
+                # Pass 3: Inverted (Fallback for black-on-white glitching)
+                {"type": OCRPass.INVERTED, "val": 0, "scale": 1.0, "gamma": 0.6}
+            ],
+            "aggressive": [
+                {"type": OCRPass.OTSU, "val": 0, "scale": 1.5, "gamma": 0.6},
+                {"type": OCRPass.ADAPTIVE, "val": 0, "scale": 1.5, "gamma": 0.6},
+                {"type": OCRPass.FIXED, "val": 200, "scale": 1.5, "gamma": 0.6}
+            ]
+        }
+        
+        # Thread Safety Lock for Fallback Pytesseract ONLY
+        # (Tesseract DLL instances are now thread-local/safe by design)
+        self.ocr_lock = threading.Lock()
+        
+        # Cooldown / Optimization Logic
+        self.suppress_ocr_until = 0  # Timestamp to resume OCR
+        self.consecutive_garbage_frames = 0
+        self.is_low_power_mode = False
+        
+        # Thread-local storage for camera instances
+        self._thread_local = threading.local()
+        
+        # Pre-calculate Gamma Table for 0.6 (Used in Levels/Runes)
+        self.gamma_table_06 = self._build_gamma_table(0.6)
+        self._gamma_cache = {0.6: self.gamma_table_06, 1.0: None}
+
+        # Icon Matching
+        self.icon_template = None
+        self._load_icon_template()
+
+    def _load_icon_template(self):
+        try:
+            template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "rune_icon_template.png")
+            if os.path.exists(template_path):
+                self.icon_template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+                if self.config.get("debug_mode"):
+                    print(f"VISION: Loaded Rune Icon Template from {template_path}")
+            else:
+                if self.config.get("debug_mode"):
+                    print("VISION: Rune Icon Template not found. Icon detection disabled.")
+        except Exception as e:
+            print(f"Error loading icon template: {e}")
+
+    def detect_rune_icon(self, img_bgr):
+        """
+        Checks if the Rune Icon is present in the "runes_icon_region".
+        Returns (True/False, confidence).
+        """
+        if self.icon_template is None:
+            return True, 1.0 # Default to True if no template (don't block)
+        
+        reg = self.runes_icon_region
+        if not reg or reg.get("width", 0) == 0:
+            return True, 1.0 # No region defined
+
+        # Extract Region
+        mon = self.config.get("monitor_region", {})
+        left = reg.get("left", 0) - mon.get("left", 0)
+        top = reg.get("top", 0) - mon.get("top", 0)
+        w = reg.get("width", 50)
+        h = reg.get("height", 50)
+        
+        if img_bgr is None: return False, 0.0
+        
+        fh, fw = img_bgr.shape[:2]
+        if left < 0 or top < 0 or (left+w) > fw or (top+h) > fh:
+            return False, 0.0
+            
+        roi = img_bgr[top:top+h, left:left+w]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        
+        # Match
+        res = cv2.matchTemplate(gray, self.icon_template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(res)
+        
+        return max_val > 0.5, max_val
+
+
+    @property
+    def camera(self):
+        """Thread-safe BetterCam instance."""
+        if not hasattr(self._thread_local, 'camera'):
+            try:
+                # BetterCam works best with a dedicated instance per thread or shared?
+                # Usually one instance is fine, but Desktop Duplication can be picky.
+                self._thread_local.camera = bettercam.create()
+            except Exception as e:
+                logger.error(f"Failed to create BetterCam: {e}")
+                self._thread_local.camera = None
+        return self._thread_local.camera
+
+    @property
+    def sct(self):
+        """Thread-safe mss instance."""
+        if not hasattr(self._thread_local, 'sct'):
+            self._thread_local.sct = mss.mss()
+        return self._thread_local.sct
+
+    def _build_gamma_table(self, gamma):
+        if gamma == 1.0: return None
+        invGamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** invGamma) * 255
+            for i in np.arange(0, 256)]).astype("uint8")
+        return table
+
     def _init_tess_api(self):
-        """Initializes the Direct DLL API if possible."""
+        """Initializes the Direct DLL API instances."""
         try:
             exe_path = self.config.get("tesseract_cmd", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
             base_path = os.path.dirname(exe_path)
@@ -106,16 +262,49 @@ class VisionEngine:
             tessdata_path = os.path.join(base_path, "tessdata")
             
             if os.path.exists(dll_path):
-                self.tess_api = TesseractAPI(dll_path, tessdata_path, lang="fra")
+                # Allowlist for Day Detection
+                allowlist_main = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
+                
+                # Path to manual words file
+                words_file = os.path.join(self.project_root, "data", "ocr_words.txt")
+                
+                # Tesseract Variables to restrict vocabulary
+                tess_vars = {
+                    "load_system_dawg": "0",
+                    "load_freq_dawg": "0",
+                    "user_words_file": words_file
+                }
+                
+                # Create a pool of engines for parallel passes
+                # Using 'eng' instead of 'fra' because we don't need accents and 
+                # we want to avoid French dictionary bias (confusing II for IL/le).
+                self.tess_pool_main = [
+                    TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=7, variables=tess_vars),
+                    TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=7, variables=tess_vars),
+                    TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=7, variables=tess_vars)
+                ]
+                # Keep reference for legacy code
+                self.tess_api_main = self.tess_pool_main[0]
+                
+                # 2. Secondary Engine: Stats (Digits ONLY)
+                allowlist_stats = "0123456789"
+                self.tess_api_secondary = TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_stats, psm=7)
+                
                 if self.config.get("debug_mode"):
-                    print(f"VISION: High-performance Tesseract API (DLL) loaded.")
+                    print(f"VISION: High-performance Parallel Tesseract API loaded (3 workers).")
             else:
                 if self.config.get("debug_mode"):
-                    print(f"VISION: libtesseract-5.dll not found. Falling back to pytesseract.")
+                    print(f"VISION: libtesseract-5.dll not found at {dll_path}.")
+                # CRITICAL: Do not fallback to pytesseract for main loop. It's too slow.
+                raise FileNotFoundError(f"Tesseract DLL not found. Pytesseract fallback DISABLED for performance.")
+
         except Exception as e:
             if self.config.get("debug_mode"):
-                print(f"VISION: Failed to load Tesseract DLL: {e}. Falling back to pytesseract.")
-            self.tess_api = None
+                print(f"VISION: Failed to load Tesseract DLL: {e}.")
+            # We must fail hard here or the user will get 2 FPS.
+            print("CRITICAL ERROR: High-Performance OCR failed to load.")
+            self.tess_api_main = None
+            self.tess_api_secondary = None
 
         self.last_level_scan_time = 0
         self.last_runes_scan_time = 0
@@ -135,8 +324,6 @@ class VisionEngine:
     def get_monitors(self):
         """Returns a list of all monitors with their global coordinates."""
         try:
-            import ctypes
-            from ctypes import wintypes
             # Try to be DPI aware for correct coordinates
             try:
                 ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -163,85 +350,18 @@ class VisionEngine:
             print(f"Vision Engine: Failed to get monitors: {e}")
             return []
 
-    def update_from_config(self):
+    def update_from_config(self) -> None:
         """Refreshes parameters that can be changed at runtime."""
+        self.debug_mode = self.config.get("debug_mode", False)
         
         # Configure Tesseract path
         tesseract_cmd = self.config.get("tesseract_cmd", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         if os.path.exists(tesseract_cmd):
              pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
         
-        # We could also re-init camera if capture mode changed
-        if hasattr(self, 'debug_mode'):
-             self.debug_mode = self.config.get("debug_mode", False)
-
     def _init_camera(self, region=None):
-        """Initializes or re-initializes BetterCam with current region and correct monitor."""
-        try:
-            if self.camera:
-                try: self.camera.stop()
-                except: pass
-                self.camera = None
-            
-            if self.wgc_control:
-                try: self.wgc_control.stop()
-                except: pass
-                self.wgc_control = None
-                self.wgc_instance = None
-            
-            # Use provided region or fallback to config
-            if region is None:
-                region = self.config.get("monitor_region", {})
-            
-            if not region:
-                self.camera = None
-                return
-
-            if self.config.get("hdr_mode"):
-                print("Vision Engine: HDR Mode Enabled. Checks capture preference.")
-                # Previous logic forced use_pil=False. We now respect the config.
-                if not self.use_pil:
-                     print("Vision Engine: Using BetterCam (DXGI) with Gamma Correction.")
-                else:
-                     print("Vision Engine: Using PIL (GDI) Fallback as requested.")
-                     self.camera = None
-                     return # Skip BetterCam init
-
-
-
-            # 1. Find which monitor this region (top-left) belongs to
-            monit_idx = 0
-            monitors = self.get_monitors()
-            
-            global_left = region.get('left', 0)
-            global_top = region.get('top', 0)
-            
-            found_monitor = None
-            for i, m in enumerate(monitors):
-                if (m['left'] <= global_left < m['right']) and (m['top'] <= global_top < m['bottom']):
-                    monit_idx = i
-                    found_monitor = m
-                    break
-            
-            if not found_monitor:
-                print(f"Vision Engine: Could not find monitor for region at ({global_left}, {global_top}). Defaulting to 0.")
-                found_monitor = monitors[0] if monitors else {"left": 0, "top": 0}
-
-            # 2. Convert GLOBAL coordinates to LOCAL monitor coordinates
-            # mss used global, bettercam uses local to the specific output.
-            local_left = global_left - found_monitor['left']
-            local_top = global_top - found_monitor['top']
-            local_right = local_left + region.get('width', 100)
-            local_bottom = local_top + region.get('height', 100)
-            
-            # 3. Initialize BetterCam on the specific monitor (output_idx)
-            # BetterCam output_idx matches EnumDisplayMonitors order usually
-            self.camera = bettercam.create(device_idx=0, output_idx=monit_idx, region=(local_left, local_top, local_right, local_bottom))
-            print(f"Vision Engine: BetterCam initialized on Monitor {monit_idx} at local region ({local_left}, {local_top}, {local_right}, {local_bottom})")
-            
-        except Exception as e:
-            print(f"Vision Engine: Failed to initialize BetterCam: {e}")
-            self.camera = None
+        """Initializes Capture (MSS). No special init needed usually."""
+        pass
 
     def set_scan_delay(self, delay):
         self.scan_delay = delay
@@ -263,96 +383,90 @@ class VisionEngine:
         self.runes_region = region
         self.config["runes_region"] = region
 
+    def update_runes_icon_region(self, region):
+        """Updates the runes icon region."""
+        self.runes_icon_region = region
+        self.config["runes_icon_region"] = region
+
 
     def set_region_override(self, region):
         """Sets a temporary override region for scanning (e.g. for Victory check). Pass None to clear."""
         self.region_override = region
 
-    def scan_victory_region(self):
+    def scan_victory_region(self, frame=None):
         """
         Scans the victory region specifically for "résultat" detection.
         Returns (text, score) or (None, 0) if nothing detected.
-        Uses otsu preprocessing as determined by testing.
         """
         victory_region = self.config.get("victory_region")
         if not victory_region:
-            if self.config.get("debug_mode"):
-                print("DEBUG Victory: victory_region not configured")
             return None, 0
         
-        if self.config.get("debug_mode"):
-            print(f"DEBUG Victory: Scanning region {victory_region}")
-        
-        # Temporarily override region
-        old_override = getattr(self, 'region_override', None)
-        self.region_override = victory_region
-        
         try:
-            img = self.capture_screen()
-            if img is None:
-                if self.config.get("debug_mode"):
-                    print("DEBUG Victory: Failed to capture image")
-                return None, 0
+            # Use provided frame (likely cropped from main loop) or capture new one
+            if frame is not None:
+                img = frame
+            else:
+                # Temporarily override region to capture ONLY the victory area
+                old_override = getattr(self, 'region_override', None)
+                self.region_override = victory_region
+                try:
+                    img = self.capture_screen()
+                finally:
+                    self.region_override = old_override
             
-            if self.config.get("debug_mode"):
-                print(f"DEBUG Victory: Image captured: {img.shape[1]}x{img.shape[0]}")
+            if img is None: return None, 0
             
-            # Use otsu preprocessing (determined to be the best)
+            # Use otsu preprocessing
             processed = self.preprocess_image(img, pass_type="otsu")
-            if processed is None:
-                if self.config.get("debug_mode"):
-                    print("DEBUG Victory: Failed to preprocess image")
-                return None, 0
+            if processed is None: return None, 0
             
-            # OCR with PSM 7 (single text line)
-            data = pytesseract.image_to_data(processed, config='--psm 7', output_type=pytesseract.Output.DICT)
+            # OCR with PSM 7
+            with self.ocr_lock:
+                data = pytesseract.image_to_data(processed, config='--psm 7', output_type=pytesseract.Output.DICT)
             
             valid_indices = [i for i, t in enumerate(data['text']) if t.strip()]
             raw_text = " ".join([data['text'][i] for i in valid_indices]).strip()
             text = self.clean_text(raw_text)
             
-            if self.config.get("debug_mode"):
-                print(f"DEBUG Victory: OCR raw='{raw_text}', cleaned='{text}'")
+            if not text: return None, 0
             
-            if text:
-                # Check if it matches VICTORY pattern
-                # Normalize: remove accents and convert to uppercase
-                normalized = text.strip().upper()
-                # Remove accents for matching (é -> E, à -> A, etc.)
-                import unicodedata
-                normalized_no_accents = ''.join(c for c in unicodedata.normalize('NFD', normalized) 
-                                                if unicodedata.category(c) != 'Mn')
-                
-                if self.config.get("debug_mode"):
-                    print(f"DEBUG Victory: normalized='{normalized}', no_accents='{normalized_no_accents}'")
-                
-                # Victory patterns (without accents)
-                victory_patterns_base = ["RESULTAT", "RESULTIT", "RESULT", "RECOMPE"]
-                
-                # Always use fuzzy matching (more reliable)
-                from fuzzywuzzy import fuzz
-                best_score = 0
-                best_pattern = None
-                for pattern in victory_patterns_base:
-                    score = fuzz.ratio(normalized_no_accents, pattern)
-                    if score > best_score:
-                        best_score = score
-                        best_pattern = pattern
-                
-                if self.config.get("debug_mode"):
-                    print(f"DEBUG Victory: Best fuzzy match '{best_pattern}' score={best_score:.1f} (normalized='{normalized_no_accents}')")
-                
-                # Lower threshold for victory detection (60 instead of 65)
-                # because "RÉSULTAT" vs "RESULTAT" should match (score=100)
-                if best_score >= 60:
-                    if self.config.get("debug_mode"):
-                        print(f"VICTORY detected (fuzzy): '{text}' (Score: {best_score:.1f})")
-                    return text, best_score
-                else:
-                    if self.config.get("debug_mode"):
-                        print(f"DEBUG Victory: Best fuzzy score {best_score:.1f} < 60, not enough")
+            # Check if it matches VICTORY pattern
+            # Normalize: remove accents and convert to uppercase
+            normalized = text.strip().upper()
+            # Remove accents for matching (é -> E, à -> A, etc.)
+            normalized_no_accents = ''.join(c for c in unicodedata.normalize('NFD', normalized) 
+                                            if unicodedata.category(c) != 'Mn')
             
-            if self.config.get("debug_mode"):
+            if self.debug_mode:
+                print(f"DEBUG Victory: normalized='{normalized}', no_accents='{normalized_no_accents}'")
+            
+            # Victory patterns (without accents)
+            victory_patterns_base = ["RESULTAT", "RESULTIT", "RESULT", "RECOMPE"]
+            
+            # Always use fuzzy matching (more reliable)
+            best_score = 0
+            best_pattern = None
+            for pattern in victory_patterns_base:
+                score = fuzz.ratio(normalized_no_accents, pattern)
+                if score > best_score:
+                    best_score = score
+                    best_pattern = pattern
+            
+            if self.debug_mode:
+                print(f"DEBUG Victory: Best fuzzy match '{best_pattern}' score={best_score:.1f} (normalized='{normalized_no_accents}')")
+            
+            # Lower threshold for victory detection (60 instead of 65)
+            # because "RÉSULTAT" vs "RESULTAT" should match (score=100)
+            if best_score >= 60:
+                if self.debug_mode:
+                    print(f"VICTORY detected (fuzzy): '{text}' (Score: {best_score:.1f})")
+                return text, best_score
+            else:
+                if self.debug_mode:
+                    print(f"DEBUG Victory: Best fuzzy score {best_score:.1f} < 60, not enough")
+            
+            if self.debug_mode:
                 print("DEBUG Victory: No victory pattern detected")
             return None, 0
         finally:
@@ -362,12 +476,21 @@ class VisionEngine:
     def start_monitoring(self, callback):
         if self.running: return
         self.running = True
+        
+        # Start Main Loop (Fast, Day Detection)
         self.thread = threading.Thread(target=self._loop, args=(callback,))
         self.thread.daemon = True
         self.thread.start()
 
+        # Start Secondary Loop (Slow, Level/Runes)
+        self.secondary_running = True
+        self.secondary_thread = threading.Thread(target=self._secondary_loop)
+        self.secondary_thread.daemon = True
+        self.secondary_thread.start()
+
     def stop(self):
         self.running = False
+        self.secondary_running = False
 
     def pause(self):
         self.paused = True
@@ -377,52 +500,60 @@ class VisionEngine:
         self.paused = False
         print("Vision Engine: Resumed")
         
-    def capture_screen(self):
-        """Captures the current region using PIL ImageGrab."""
+    def capture_screen(self) -> np.ndarray:
+        """Captures the current region using BetterCam."""
         try:
-            # Check for override, otherwise use config region
-            reg = getattr(self, 'region_override', None)
-            if not reg:
-                reg = self.config.get("monitor_region", {})
-            
+            reg = self.region_override if self.region_override else self.region
             if not reg: return None
-
-            # PIL Capture (always used)
-            try:
-                if reg:
-                    left = reg.get('left', 0)
-                    top = reg.get('top', 0)
-                    width = reg.get('width', 100)
-                    height = reg.get('height', 100)
-                    # Use bbox directly with all_screens=True to support negative coordinates (multi-monitor)
-                    cropped = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
-                else:
-                    # Fallback if no region (should not happen)
-                    cropped = ImageGrab.grab(all_screens=True)
-                    
-                # Convert PIL to OpenCV (RGB -> BGR)
-                img_np = np.array(cropped)
-                return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-            except Exception as e:
-                print(f"PIL Capture failed: {e}")
-                return None
-
+            
+            # BetterCam Region: [left, top, right, bottom]
+            left = int(reg.get("left", 0))
+            top = int(reg.get("top", 0))
+            right = left + int(reg.get("width", 100))
+            bottom = top + int(reg.get("height", 100))
+            
+            region = (left, top, right, bottom)
+            
+            # Use BetterCam
+            if self.camera:
+                img = self.camera.grab(region=region)
+                if img is not None:
+                     # BetterCam returns RGB or BGR? 
+                     # Usually RGB. OpenCV wants BGR.
+                     return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            
+            # Fallback to MSS
+            monitor = {
+                "top": top,
+                "left": left,
+                "width": right - left,
+                "height": bottom - top
+            }
+            sct_img = self.sct.grab(monitor)
+            return cv2.cvtColor(np.array(sct_img), cv2.COLOR_BGRA2BGR)
+            
         except Exception as e:
-            print(f"Capture error: {e}")
+            if self.debug_mode:
+                print(f"Vision Engine: Capture failed: {e}")
             return None
 
 
     def adjust_gamma(self, image, gamma=1.0):
         if gamma == 1.0: return image
-        invGamma = 1.0 / gamma
-        table = np.array([((i / 255.0) ** invGamma) * 255
-            for i in np.arange(0, 256)]).astype("uint8")
+        
+        # Check cache
+        if gamma in self._gamma_cache:
+            table = self._gamma_cache[gamma]
+        else:
+            # Build and cache
+            table = self._build_gamma_table(gamma)
+            self._gamma_cache[gamma] = table
+            
         return cv2.LUT(image, table)
 
-    def is_worth_ocr(self, img):
+    def is_worth_ocr(self, img: np.ndarray) -> bool:
         """
-        Fast check to see if the image contains enough bright pixels to potentially be the 'JOUR' text.
-        Returns True if OCR should be attempted, False otherwise.
+        Fast check to see if the image contains enough bright pixels.
         """
         if img is None: return False
         
@@ -433,43 +564,53 @@ class VisionEngine:
             gray = img
             
         # Optimization: We look for white-ish pixels. 
-        # The 'JOUR' text is typically very bright (>200)
         max_val = np.max(gray)
-        # Reverted to 100 per user report
-        if max_val < 100: 
+        # Lowered to 70 for robustness with photos/darker setups
+        if max_val < 70: 
             return False
             
         return True
 
-    def preprocess_image(self, img, pass_type="otsu", custom_val=0, scale=1.0, gamma=1.0):
-        if img is None: return None
+    def preprocess_image(self, img: np.ndarray, pass_type: OCRPass = OCRPass.OTSU, 
+                         custom_val: int = 0, scale: float = 1.0, 
+                         gamma: float = 1.0, input_gray: np.ndarray = None) -> np.ndarray:
+        if img is None and input_gray is None: return None
         
         # Dynamic Scaling
-        h, w = img.shape[:2]
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-        # Convert to gray
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Optimization: If no scaling needed and input_gray provided, skip resize
+        if scale == 1.0 and input_gray is not None:
+            gray = input_gray
+        else:
+            if img is not None:
+                h, w = img.shape[:2]
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                # Use INTER_LINEAR for speed
+                img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                # Convert to gray
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            elif input_gray is not None:
+                # Scale the gray input directly
+                h, w = input_gray.shape[:2]
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                gray = cv2.resize(input_gray, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            else:
+                return None
 
         # Gamma Correction
         if gamma != 1.0:
             gray = self.adjust_gamma(gray, gamma)
 
-
-        if pass_type == "otsu" or pass_type == "simple_otsu":
+        if pass_type == OCRPass.OTSU:
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        elif pass_type == "fixed" or pass_type == "dynamic":
-            # Use provided value or default
+        elif pass_type == OCRPass.FIXED:
             val = custom_val if custom_val > 0 else 230
             _, thresh = cv2.threshold(gray, val, 255, cv2.THRESH_BINARY_INV)
-        elif pass_type == "adaptive":
-             # Adaptive Gaussian
+        elif pass_type == OCRPass.ADAPTIVE:
              thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                             cv2.THRESH_BINARY_INV, 25, 2)
-        elif pass_type == "inverted":
-             # Invert image first, then Otsu
+        elif pass_type == OCRPass.INVERTED:
              gray = cv2.bitwise_not(gray)
              _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         else:
@@ -481,24 +622,17 @@ class VisionEngine:
         
         return thresh
 
-    def is_relevant(self, text):
-        """Checks if text is relevant for saving (avoids saving 'OT', 'K', 'S' etc)."""
+    def is_relevant(self, text: str) -> bool:
+        """Checks if text is relevant for saving."""
         if not text: return False
         t = text.upper()
         
-        # Valid short tokens (Day numbers, etc)
-        valid_short = ["1", "2", "3", "I", "II", "III", "IV", "V"] 
-        if len(t) < 3 and t not in valid_short:
+        if len(t) < 3 and t not in self.VALID_SHORT:
             return False
 
-        # Must contain at least one characteristic letter or be a valid day indicator
-        # "J" (Jour), "O" (Jour/One), "U" (Jour), "R" (Jour), "I" (1/2/3), "V" (Victory)
-        relevant_chars = ["J", "O", "U", "I", "1", "2", "3", "V", "F"] 
-        
-        # Check for banned signals explicitly
-        if t in ["OT", "S", "K", "SS", "OT."]: return False
+        if t in self.BANNED_SIGNALS: return False
 
-        if any(c in t for c in relevant_chars):
+        if any(c in t for c in self.RELEVANT_CHARS):
             return True
         return False
         
@@ -518,112 +652,91 @@ class VisionEngine:
             return match.group(0)
         return ""
 
-    def _process_level_ocr(self):
+    def _process_numeric_region(self, region_config, callback, process_name="Numeric"):
         """
-        Captures and processes the Level region.
+        Generic helper for Level/Runes OCR using the Unified Capture if available.
         """
-        if not self.level_region: return
+        if not region_config: return
         
         try:
-            # Manual Capture for now to avoid state issues with main loop override
-            reg = self.level_region
+            reg = region_config
             left = reg.get('left', 0)
             top = reg.get('top', 0)
             width = reg.get('width', 50)
             height = reg.get('height', 30)
             
-            # Simple check for valid region
             if width <= 0 or height <= 0: return
 
-            # Enable all_screens=True to support multi-monitor setups with negative coordinates
-            full_img = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
-            img_np = np.array(full_img)
-            img = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            img = None
+            
+            # Unified Capture Logic
+            if self.last_raw_frame is not None and (time.time() - self.last_frame_timestamp < 0.2):
+                mon_reg = self.config.get("monitor_region", {})
+                rel_x = left - mon_reg.get('left', 0)
+                rel_y = top - mon_reg.get('top', 0)
+                fh, fw = self.last_raw_frame.shape[:2]
+                
+                if rel_x >= 0 and rel_y >= 0 and (rel_x + width) <= fw and (rel_y + height) <= fh:
+                     img = self.last_raw_frame[rel_y:rel_y+height, rel_x:rel_x+width]
+                else:
+                     # Fallback capture
+                     monitor = {"top": top, "left": left, "width": width, "height": height}
+                     img = cv2.cvtColor(np.array(self.sct.grab(monitor)), cv2.COLOR_BGRA2BGR)
+            else:
+                 # Standard capture
+                 monitor = {"top": top, "left": left, "width": width, "height": height}
+                 img = cv2.cvtColor(np.array(self.sct.grab(monitor)), cv2.COLOR_BGRA2BGR)
 
             if img is None: return
 
-            # 2. Preprocess (Optimized based on tuning results)
-            # Best found: Gamma 0.6, Otsu, Scale 2.0 (standard for low res)
+            # Preprocess (Gamma 0.6 -> Otsu -> Scale 2.0)
             scale = 2.0
-            img_resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            # Use INTER_LINEAR for speed (Phase 1/2 overlap)
+            img_resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
             gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
             
-            # Gamma correction 0.6 (Darkens the image to highlight bright text)
+            # Use optimized Gamma LUT
             gray = self.adjust_gamma(gray, gamma=0.6)
             
-            # Otsu thresholding worked best in tests
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
             
-            # 3. OCR (Digits only)
-            if self.tess_api:
-                # Use High-performance DLL if available
-                # Note: TessAPI already has psm 7 and whitelist 0-9 by default 
-                # but we'll re-ensure consistency if needed.
-                text, conf = self.tess_api.get_text(thresh)
-            else:
-                # Fallback to Pytesseract
-                custom_config = r'--psm 7 -c tessedit_char_whitelist=0123456789'
-                text = pytesseract.image_to_string(thresh, config=custom_config).strip()
-            
-            try:
+            if self.tess_api_secondary:
+                # Use Stats Instance
+                text, conf = self.tess_api_secondary.get_text(thresh)
+                
+                if text:
+                    # Log RAW text seen if debug mode + sparse logging
+                    if self.config.get("debug_mode") and self.frame_count % 60 == 0:
+                         logger.info(f"OCR RAW ({process_name}): '{text}' Conf: {conf}")
+
                 if text and text.isdigit():
-                    level = int(text)
-                    # Sanity check: Level 1 to 713 (max level)
-                    if 1 <= level <= 713:
-                        if self.level_callback:
-                            self.level_callback(level)
-            except:
+                    val = int(text)
+                    if callback:
+                        callback(val, conf) # Pass Confidence!
+            else:
+                # Fallback removed
                 pass
 
         except Exception as e:
             if self.config.get("debug_mode"):
-                print(f"Level Processing Failed: {e}")
+                print(f"{process_name} Processing Failed: {e}")
+
+    def _process_level_ocr(self):
+        """Captures and processes the Level region."""
+        self._process_numeric_region(self.level_region, self.level_callback, "Level")
 
     def _process_runes_ocr(self):
-        """
-        Captures and processes the Runes region.
-        """
-        if not self.runes_region: return
-        
-        try:
-            reg = self.runes_region
-            left = reg.get('left', 0)
-            top = reg.get('top', 0)
-            width = reg.get('width', 150)
-            height = reg.get('height', 40)
-            
-            if width <= 0 or height <= 0: return
+        """Captures and processes the Runes region."""
+        # GATE: Check Icon First
+        if self.last_raw_frame is not None:
+             is_icon_present, conf = self.detect_rune_icon(self.last_raw_frame)
+             if not is_icon_present:
+                 if self.config.get("debug_mode") and self.frame_count % 60 == 0:
+                     logger.info(f"Runes OCR Paused: Icon Missing ({conf:.2f})")
+                 return # Skip OCR if icon is missing (Map, Menu, etc.)
 
-            full_img = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
-            img_np = np.array(full_img)
-            img = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+        self._process_numeric_region(self.runes_region, self.runes_callback, "Runes")
 
-            if img is None: return
-
-            # Preprocess (Same as Level for consistency)
-            scale = 2.0
-            img_resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-            gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-            gray = self.adjust_gamma(gray, gamma=0.6)
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-            
-            if self.tess_api:
-                text, conf = self.tess_api.get_text(thresh)
-            else:
-                custom_config = r'--psm 7 -c tessedit_char_whitelist=0123456789'
-                text = pytesseract.image_to_string(thresh, config=custom_config).strip()
-            
-            try:
-                if text and text.isdigit():
-                    num = int(text)
-                    if self.runes_callback:
-                        self.runes_callback(num)
-            except:
-                pass
-
-        except Exception as e:
-            if self.config.get("debug_mode"):
-                print(f"Runes Processing Failed: {e}")
 
     def request_runes_burst(self) -> List[int]:
         """
@@ -632,353 +745,236 @@ class VisionEngine:
         results = []
         if not self.runes_region: return results
         
+        reg = self.runes_region
+        left, top = reg.get('left', 0), reg.get('top', 0)
+        width, height = reg.get('width', 150), reg.get('height', 40)
+        monitor = {"top": top, "left": left, "width": width, "height": height}
+
         for _ in range(5):
             try:
-                # Capture
-                reg = self.runes_region
-                left, top = reg.get('left', 0), reg.get('top', 0)
-                width, height = reg.get('width', 150), reg.get('height', 40)
+                # Capture Optimized (MSS)
+                sct_img = self.sct.grab(monitor)
+                img = np.array(sct_img)
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
                 
-                full_img = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
-                img = cv2.cvtColor(np.array(full_img), cv2.COLOR_RGB2BGR)
-                
-                # Preprocess
-                scaled = cv2.resize(img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+                # Preprocess (Fast path using numeric helper logic essence)
+                scaled = cv2.resize(img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
                 gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
                 gamma_adj = self.adjust_gamma(gray, gamma=0.6)
                 _, thresh = cv2.threshold(gamma_adj, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 
-                # OCR
-                if self.tess_api:
-                    text, _ = self.tess_api.get_text(thresh)
-                else:
-                    text = pytesseract.image_to_string(thresh, config='--psm 7 -c tessedit_char_whitelist=0123456789').strip()
-                
-                if text and text.isdigit():
-                    results.append(int(text))
+                if self.tess_api_secondary:
+                    text, _ = self.tess_api_secondary.get_text(thresh)
+                    if text and text.isdigit():
+                        results.append(int(text))
             except Exception as e:
-                if self.config.get("debug_mode"): print(f"Burst scan error: {e}")
+                if self.config.get("debug_mode"): 
+                    print(f"Burst scan error: {e}")
             
-            # Very small pause to allow screen buffer to potentially update (mostly frames)
-            time.sleep(0.01)
+            # Removed sleep for burst speed
             
         return results
 
+    def _ocr_pass_worker(self, engine: TesseractAPI, img: np.ndarray, gray_preview: np.ndarray, p_config: Dict[str, Any]):
+        """Runs a single OCR pass on a background thread."""
+        try:
+            processed = self.preprocess_image(img, pass_type=p_config["type"], 
+                                              custom_val=p_config["val"], 
+                                              scale=p_config["scale"],
+                                              gamma=p_config.get("gamma", 1.0),
+                                              input_gray=gray_preview if p_config["scale"] == 1.0 else None)
+            if processed is None: return None
+
+            # --- SAFETY CHECK: Prevent Tesseract "Image too small" errors ---
+            coords = cv2.findNonZero(processed)
+            if coords is None: return None
+            _, _, w, h = cv2.boundingRect(coords)
+            # Filter out noise (dots/lines < 10px wide) which causes Tesseract to complain
+            if w < 10 or h < 8: return None 
+            # ----------------------------------------------------------------
+
+            text, avg_conf = engine.get_text(processed)
+            cleaned = self.clean_text(text)
+            cleaned = self.CORRECTION_MAP.get(cleaned, cleaned)
+            
+            if not cleaned: return None
+            
+            return {
+                "text": cleaned,
+                "conf": avg_conf,
+                "width": processed.shape[1]
+            }
+        except Exception as e:
+            if self.debug_mode: print(f"OCR Pass Worker Error: {e}")
+            return None
+
+    def _perform_full_ocr_cycle(self, img: np.ndarray, gray_preview: np.ndarray):
+        """Internal helper for a complete OCR run (all passes in PARALLEL)."""
+        best_text = ""
+        best_conf = 0.0
+        best_width = 0
+        found_valid_text = False
+        
+        # Optimization: Only scan if it's worth it
+        if not self.is_worth_ocr(gray_preview):
+             return "", 0.0, 0, False
+
+        # --- ADAPTIVE LOGIC (Data-Driven from Fine-Tuning) ---
+        # Analyze brightness to choose the best strategy
+        mean_brightness = np.mean(gray_preview)
+        
+        passes = []
+        if mean_brightness < 70:
+            # DARK IMAGE: Use Otsu + Gamma 0.4
+            passes.append({"type": OCRPass.OTSU, "val": 0, "scale": 1.0, "gamma": 0.4})
+        else:
+            # BRIGHT/NORMAL IMAGE: Use Fixed 240 + Gamma 0.3
+            passes.append({"type": OCRPass.FIXED, "val": 240, "scale": 1.0, "gamma": 0.3})
+            
+        # Dispatch to ThreadPool
+        futures = []
+        for i, p_config in enumerate(passes):
+            # Use one of the pool engines
+            engine = self.tess_pool_main[i % len(self.tess_pool_main)]
+            futures.append(self.executor.submit(self._ocr_pass_worker, engine, img, gray_preview, p_config))
+            
+        # Collect results
+        for future in futures:
+            res = future.result()
+            if res:
+                if len(res["text"]) > 2: found_valid_text = True
+                
+                if res["conf"] > best_conf:
+                    best_conf = res["conf"]
+                    best_text = res["text"]
+                    best_width = res["width"]
+                    
+        return best_text, best_conf, best_width, found_valid_text
+
+    def _day_burst(self, callback, brightness):
+        """Takes 4 additional high-speed samples to confirm a detection."""
+        if self.debug_mode:
+            print("VISION: Starting Day Burst confirmation...")
+            
+        for _ in range(3): # Take 3 more samples (total 4 with the original one)
+            try:
+                img = self.capture_screen()
+                if img is None: continue
+                
+                self.last_raw_frame = img
+                self.last_frame_timestamp = time.time()
+                
+                gray_preview = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                text, conf, width, _ = self._perform_full_ocr_cycle(img, gray_preview)
+                
+                if text:
+                    # Execute callback immediately for consensus
+                    callback(text, width, 0, {}, brightness, conf)
+            except:
+                pass
+
     def _loop(self, callback):
-        print(f"Vision Engine: Monitoring started with 2-Pass Strategy (optimized). Debug Mode: {self.config.get('debug_mode')}")
+        print(f"Vision Engine: Monitoring started with Multi-Instance Strategy. Debug Mode: {self.config.get('debug_mode')}")
         
         while self.running:
             try:
-                if self.paused:
-                    time.sleep(1)
-                    continue
-
-                self.frame_count += 1
                 loop_start = time.perf_counter()
                 
-                # STALL DETECTION: Check if previous loop took too long
-                if getattr(self, 'last_loop_end', 0) > 0:
-                    loop_duration = loop_start - self.last_loop_end
-                    if loop_duration > 1.0:
-                        self.log_debug(f"[WARNING] LOOP STALL DETECTED: {loop_duration:.2f}s")
+                # 1. Cooldown Check (Global Pause)
+                if time.time() < self.suppress_ocr_until:
+                    time.sleep(1.0) 
+                    continue
                 
+                # 2. Capture
                 img = self.capture_screen()
                 if img is None:
                     time.sleep(0.1)
                     continue
                 
-                # Cache for labeled saving
-                self.last_raw_frame = img.copy()
+                self.last_raw_frame = img
+                
                 self.last_frame_timestamp = time.time()
                 
-                brightness = 0
-                if img is not None:
-                     brightness = np.mean(img)
-
-                # --- SMART FILTER ---
-                self.total_scans += 1
-                if not self.is_worth_ocr(img):
-                    self.skipped_scans += 1
-                    # Notify callback of current brightness even if OCR is skipped
-                    # This is critical for fade detection.
-                    callback("", 0, 0, [], brightness, 0)
-                    
-                    if self.scan_delay > 0:
-                        time.sleep(self.scan_delay)
+                # 3. Preprocess
+                h, w = img.shape[:2]
+                gray_preview = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                brightness = np.mean(gray_preview)
+                
+                if brightness < 15: # Too dark for OCR, but relevant for Black Screen detection
+                    self.consecutive_garbage_frames = 0
+                    # Fire callback with empty text to report brightness to StateLogic
+                    callback("", 0, 0, {}, brightness, 0)
+                    time.sleep(0.1)
                     continue
 
-                # Dynamic OCR Logic
-                # Derived from Phase 2 Analysis: Threshold = 230 + (Brightness * 0.1)
-                # Scale 1.5x was consistently best.
+                if self.is_low_power_mode:
+                    pass
+
+                # Store debug vars once
+                dm = self.debug_mode
                 
-                # Calculate optimal threshold
-                target_thresh = 230 + (brightness * 0.1)
-                target_thresh = min(254, max(200, int(target_thresh))) # Clamp to valid range
+                # Run OCR checks
+                best_text, best_conf, best_width, found_valid_text = self._perform_full_ocr_cycle(img, gray_preview)
+                best_center_offset = 0 # Not supported in DLL mode currently
+                best_word_data = {}    # Not supported in DLL mode currently
                 
-                # We will try the calculated Optimal first, then fallbacks for edge cases
-                # Strategy:
-                # 1. Dynamic Fixed: Fast, 85% success rate.
-                # 2. Adaptive: Slower, handles extreme brightness gradients.
-                # 3. Inverted: Handles rare bloom/inversion cases.
-                # Strategy (Optimized for 10+ FPS):
-                all_passes = [
-                    {"type": "simple_otsu", "val": 0, "scale": 1.0, "gamma": 1.0, "id": "otsu"},
-                    {"type": "dynamic", "val": target_thresh, "scale": 1.0, "gamma": 1.0, "id": "dyn_1.0"},
-                    {"type": "dynamic", "val": target_thresh, "scale": 1.2, "gamma": 0.8, "id": "dyn_0.8"},
-                    {"type": "fixed", "val": 250, "scale": 1.2, "gamma": 0.8, "id": "fixed_250"},
-                    {"type": "adaptive", "val": 0, "scale": 1.0, "gamma": 1.0, "id": "adaptive"}
-                ]
+                # --- NOISE THROTTLE LOGIC ---
+                self.frame_count += 1
                 
-                # Reorder passes for Fast Mode & Adaptive Selection
-                prioritized_passes = []
-                
-                # 1. Last Successful Pass (Fast Mode)
-                if self.last_successful_pass:
-                    matching = [p for p in all_passes if p["id"] == self.last_successful_pass["id"]]
-                    if matching:
-                        match = matching[0]
-                        # Update dynamic val
-                        if match["type"] == "dynamic": match["val"] = target_thresh
-                        prioritized_passes.append(match)
-                        
-                # 2. Adaptive Sorting based on Brightness
-                others = [p for p in all_passes if p not in prioritized_passes]
-                if brightness > 180:
-                    # Bright context: Favor gamma reduction and high fixed thresholds
-                    others.sort(key=lambda x: (x.get("gamma") == 0.8 or x["type"] == "fixed"), reverse=True)
+                if not found_valid_text:
+                    self.consecutive_garbage_frames += 1
                 else:
-                    # Standard context: Favor Otsu and dynamic
-                    others.sort(key=lambda x: (x["type"] == "simple_otsu" or (x.get("gamma") == 1.0 and x["type"] == "dynamic")), reverse=True)
-                
-                prioritized_passes.extend(others)
-                
+                    self.consecutive_garbage_frames = 0
+                    self.is_low_power_mode = False
 
-                
-                best_text = ""
-                best_width = 0
-                best_center_offset = 0
-                best_word_data = []
-                best_pass = "none"
-                best_conf = 0
-                
-                # Run passes
-                for p_config in prioritized_passes:
-                    # Special path for "simple_otsu" to skip resizing/gamma if implemented in preprocess_image
-                    processed = self.preprocess_image(img, pass_type=p_config["type"], 
-                                                      custom_val=p_config["val"], 
-                                                      scale=p_config["scale"],
-                                                      gamma=p_config.get("gamma", 1.0))
-                    if processed is None: continue
+                if self.config.get("debug_mode") and (best_text or self.frame_count % 30 == 0):
+                    # Show Day RAW if anything seen, or periodic heartbeat
+                    log_text = best_text if best_text else "EMPTY"
+                    if log_text != getattr(self, '_last_logged_day_text', '') or self.frame_count % 60 == 0:
+                        logger.info(f"OCR RAW (Day): '{log_text}' Conf: {best_conf:.1f}")
+                        self._last_logged_day_text = log_text
 
-                    if self.tess_api:
-                        # Use high-performance DLL
-                        text, avg_conf = self.tess_api.get_text(processed)
-                        # Simulate the 'data' structure if needed for geometry, 
-                        # but for now text/conf is prioritized.
-                        # (Geometry can be added back to TesseractAPI if critical)
-                        data = {"text": [text], "conf": [avg_conf], "left": [0], "width": [processed.shape[1]], "top": [0]}
-                    else:
-                        # Fallback to slow Pytesseract
-                        try:
-                            custom_config = r'-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 --psm 7'
-                            data = pytesseract.image_to_data(processed, config=custom_config, output_type=pytesseract.Output.DICT)
-                        except: continue
+                if self.consecutive_garbage_frames > 5:
+                    self.is_low_power_mode = True
+                else:
+                    # Burst if Day detected
+                    if "JOUR" in best_text or "RESULTAT" in best_text:
+                        self._day_burst(callback, brightness)
                         
-                    # Calculate Confidence Score (from DLL or Pytesseract)
-                    if self.tess_api:
-                        # Values from DLL are 0-100
-                        pass 
-                    else:
-                        conf_list = [int(c) for c in data['conf'] if c != -1]
-                        avg_conf = np.mean(conf_list) if conf_list else 0
+                    # Store for Debug Inspector
+                    self.last_ocr_text = best_text
+                    self.last_ocr_conf = best_conf
+                    self.last_brightness = brightness
                     
-                    # Quality Filter: Reject very low confidence (<40)
-                    if avg_conf < 40 and p_config["type"] == "dynamic":
-                         continue
-
-                    valid_indices = [i for i, t in enumerate(data['text']) if t.strip()]
-                    raw_text = " ".join([data['text'][i] for i in valid_indices]).strip()
-                    text = self.clean_text(raw_text)
-                    
-                    # Apply corrections immediately
-                    text = self.CORRECTION_MAP.get(text, text)
-                    
-                    if text:
-                        # Heuristic: Prefer tokens starting with "JOUR" or having high confidence
-                        # If a token is a known corrected form, it gets a bonus.
-                        confidence_bonus = 0
-                        is_corrected = text in self.CORRECTION_MAP.values()
-                        if is_corrected: confidence_bonus += 10
-                        if text.startswith("JOUR"): confidence_bonus += 5
-                        
-                        current_score = avg_conf + confidence_bonus
-                        # Use a persistent best_score for comparison
-                        best_score_val = best_conf + (15 if best_text in self.CORRECTION_MAP.values() else 0)
-                        
-                        if current_score > best_score_val or (len(text) > len(best_text) and avg_conf > 50):
-                            best_conf = avg_conf
-                            best_text = text
-                            best_pass = p_config["type"]
-                            # Track success for Fast Mode
-                            if avg_conf > 70:
-                                self.last_successful_pass = p_config
-                                
-                            # Geometry calculation
-                            if valid_indices:
-                                left = min([data['left'][i] for i in valid_indices])
-                                right = max([data['left'][i] + data['width'][i] for i in valid_indices])
-                                best_width = right - left
-                                best_center_offset = abs((left + best_width / 2) - (processed.shape[1] / 2))
-                                
-                                best_word_data = []
-                                for i in valid_indices:
-                                     best_word_data.append({
-                                         "text": data['text'][i].upper(),
-                                         "left": data['left'][i],
-                                         "width": data['width'][i],
-                                         "conf": data['conf'][i]
-                                     })
-                                
-                                text_center = left + (best_width / 2)
-                                img_center = processed.shape[1] / 2
-                                best_center_offset = abs(text_center - img_center)
-                        
-                        # Early Exit (Fast Mode Trigger)
-                        if best_conf > 85:
-                            break
+                    # Standard Callback
+                    callback(best_text, best_width, best_center_offset, best_word_data, brightness, best_conf)
                 
-                # If everything failed, reset Fast Mode
-                if best_conf < 40:
-                    self.last_successful_pass = None
-
-                # Save RAW samples + Metadata on Detection
-                should_save = False
-                is_panic_save = False
+                # Adaptive FPS Logic
+                now_ts = time.time()
+                activity_detected = found_valid_text
                 
-                # 1. Normal Relevant Text
-                if best_text and self.is_relevant(best_text):
-                    should_save = True
+                # Check for brightness change (simple motion/scene change detection)
+                if hasattr(self, 'last_brightness_val'):
+                    if abs(brightness - self.last_brightness_val) > 2.0: # ~1% change threshold
+                        activity_detected = True
+                self.last_brightness_val = brightness
+
+                if activity_detected:
+                    self.last_activity_time = now_ts
+                    self.is_low_power_mode = False
                 
-                # 2. Bias Fix: High Brightness (>240) - likely burned, missed by OCR
-                # Save these to collect "hard" samples
-                if brightness > 240:
-                    should_save = True
-                    if not best_text: is_panic_save = True
-
-                # 3. Bias Fix: Random Background (1% chance) - capture true negatives
-                import random
-                if random.random() < 0.01:
-                    should_save = True
-                    if not best_text: is_panic_save = True
-
-                if should_save and self.config.get("save_raw_samples", True):
-                    # Ratelimit: Max 2 per second to avoid flooding
-                    now = time.time()
-                    if (now - self.last_raw_save_time > 0.5):
-                        self.last_raw_save_time = now
-                        try:
-                            # Sanitize text for filename
-                            if best_text:
-                                safe_text = "".join(c for c in best_text if c.isalnum())
-                            else:
-                                safe_text = "NO_TEXT"
-                            
-                            # Prefix panic saves for easy ID
-                            if is_panic_save:
-                                safe_text = "PANIC_" + safe_text
-
-                            ts_full = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
-                            
-                            # Filename: raw_TIMESTAMP_TEXT_bBRIGHTNESS.png
-                            base_name = f"raw_{ts_full}_{safe_text}_b{int(brightness)}"
-                            raw_filename = f"{base_name}.png"
-                            json_filename = f"{base_name}.json"
-                            
-                            raw_path = os.path.join(self.raw_samples_dir, raw_filename)
-                            json_path = os.path.join(self.raw_samples_dir, json_filename)
-                            
-                            # Save Image
-                            cv2.imwrite(raw_path, img)
-                            
-                            # Calculate Inference Time
-                            inference_time_ms = (time.perf_counter() - loop_start) * 1000
-                            
-                            # Calculate Image Hash (for deduplication)
-                            img_hash = ""
-                            if xxhash is not None:
-                                img_hash = xxhash.xxh64(img).hexdigest()
-                            
-                            # Get System Stats (CPU/RAM)
-                            sys_stats = {"cpu": None, "ram": None}
-                            if psutil is not None:
-                                try:
-                                    # CPU percent (non-blocking)
-                                    sys_stats["cpu"] = psutil.cpu_percent(interval=None)
-                                    sys_stats["ram"] = psutil.virtual_memory().percent
-                                except: pass
-
-                            # Save Metadata
-                            metadata = {
-                                "timestamp": ts_full,
-                                "detected_text": best_text,
-                                "safe_text": safe_text,
-                                "brightness": brightness,
-                                "image_width": img.shape[1],
-                                "image_height": img.shape[0],
-                                "image_hash": img_hash,
-                                "inference_time_ms": round(inference_time_ms, 2),
-                                "system_stats": sys_stats,
-                                "ocr_pass_used": best_pass,
-                                "ocr_width": best_width,
-                                "ocr_center_offset": best_center_offset,
-                                "word_data": best_word_data,
-                                "config_region": self.region,
-                                "passes_attempted": passes,
-                                "verification": {
-                                    "is_correct": None, # Placeholder for manual labeling
-                                    "actual_text": None,
-                                    "comments": None
-                                }
-                            }
-                            
-                            with open(json_path, "w", encoding="utf-8") as f:
-                                json.dump(metadata, f, indent=2)
-                                
-                        except Exception as e:
-                            print(f"Failed to save raw sample/metadata: {e}")
-
-                if self.config.get("debug_mode"):
-                    if best_text:
-                         # Log result
-                         duration_ms = (time.perf_counter() - loop_start) * 1000
-                         logger.debug(f"OCR: '{best_text}' (Filter: {self.is_relevant(best_text)}, Score: {int(best_conf)}) Br:{brightness:.1f} Dur:{duration_ms:.0f}ms")
-                    elif self.frame_count % 50 == 0:
-                         # Heartbeat
-                         logger.debug(f"Heartbeat - Brightness: {brightness:.1f}")
+                # If no activity for 10s, enter Power Save
+                if now_ts - self.last_activity_time > 10.0:
+                    self.is_low_power_mode = True
                 
-                # Callback now expects (text, width, center_offset, word_data, brightness, score)
-                callback(best_text, best_width, best_center_offset, best_word_data, brightness, best_conf)
-                
-                # Dynamic Delay
+                # Update Scan Delay
+                current_delay = self.power_save_delay if self.is_low_power_mode else self.base_scan_delay
+                self.scan_delay = current_delay
+
                 elapsed = time.perf_counter() - loop_start
-                self.last_loop_end = time.perf_counter() # Mark end of processing
-                
-                # --- LEVEL OCR (1Hz) ---
-                if self.level_region and (time.time() - self.last_level_scan_time > 1.0):
-                    self.last_level_scan_time = time.time()
-                    try:
-                        self._process_level_ocr()
-                    except Exception as e:
-                        print(f"Level OCR Error: {e}")
+                self.last_loop_end = time.perf_counter()
 
-                # --- RUNES OCR (1Hz) ---
-                if self.runes_region and (time.time() - self.last_runes_scan_time > 1.0):
-                    self.last_runes_scan_time = time.time()
-                    try:
-                        self._process_runes_ocr()
-                    except Exception as e:
-                        print(f"Runes OCR Error: {e}")
-
+                # Sleep to maintain FPS
                 remaining_delay = max(0, self.scan_delay - elapsed)
                 time.sleep(remaining_delay if remaining_delay > 0 else 0.001)
 
@@ -986,9 +982,54 @@ class VisionEngine:
                 print(f"Vision error: {e}")
                 time.sleep(1)
 
+    def _secondary_loop(self):
+        """
+        Secondary Thread Loop: Handles lower-priority, 1Hz OCR tasks (Level, Runes).
+        This runs independently to avoid stalling the main 'Day' detection loop.
+        """
+        print(f"Vision Engine: Secondary Worker started (Level/Runes).")
+        
+        while self.secondary_running:
+            try:
+                loop_start = time.time()
+                
+                # 1. Level OCR
+                if self.level_region:
+                    try:
+                        self._process_level_ocr()
+                    except Exception as e:
+                        if self.config.get("debug_mode"):
+                            print(f"Level OCR (Thread) Error: {e}")
+
+                # 2. Runes OCR
+                if self.runes_region:
+                    try:
+                        self._process_runes_ocr()
+                    except Exception as e:
+                         if self.config.get("debug_mode"):
+                            print(f"Runes OCR (Thread) Error: {e}")
+
+                # Maintain approx 5Hz frequency (User Request: "ne s'actualise pas assez vite")
+                elapsed = time.time() - loop_start
+                sleep_time = max(0.01, 0.2 - elapsed) # 200ms cycle
+                time.sleep(sleep_time)
+
+            except Exception as e:
+                print(f"Secondary Vision Loop Crash: {e}")
+                time.sleep(1)
+
     def log_debug(self, message: str) -> None:
         """Allow other services to log via unified logger"""
         logger.debug(message)
+
+    def trigger_cooldown(self, seconds=60):
+        """
+        Called by StateService when a Day/Event is confirmed.
+        Stops the main OCR engine for 'seconds' to save CPU.
+        """
+        self.suppress_ocr_until = time.time() + seconds
+        if self.debug_mode:
+            print(f"VISION: Cooldown triggered for {seconds}s.")
 
     def save_labeled_sample(self, label: str):
         """
@@ -1018,4 +1059,20 @@ class VisionEngine:
         except Exception as e:
             print(f"Failed to save labeled sample: {e}")
 
-
+    def get_debug_state(self) -> Dict[str, Any]:
+        """Returns internal state for the Debug Inspector UI."""
+        now = time.time()
+        cooldown_rem = max(0, self.suppress_ocr_until - now)
+        
+        return {
+            "cooldown_remaining": cooldown_rem,
+            "is_cooling_down": cooldown_rem > 0,
+            "is_low_power_mode": self.is_low_power_mode,
+            "consecutive_garbage": self.consecutive_garbage_frames,
+            "last_brightness": self.last_brightness,
+            "last_text": self.last_ocr_text,
+            "last_conf": self.last_ocr_conf,
+            "scan_delay": self.scan_delay,
+            "tess_main_active": self.tess_api_main is not None,
+            "tess_secondary_active": self.tess_api_secondary is not None
+        }

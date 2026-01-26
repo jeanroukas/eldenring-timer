@@ -53,6 +53,10 @@ class VisionService(IVisionService):
         if self.engine:
             self.engine.update_runes_region(region)
 
+    def set_runes_icon_region(self, region: Dict) -> None:
+        if self.engine:
+            self.engine.update_runes_icon_region(region)
+
     def scan_victory_region(self):
         if self.engine:
             return self.engine.scan_victory_region()
@@ -97,15 +101,15 @@ class VisionService(IVisionService):
         for observer in self.observers:
             observer(text, width, offset, word_data, brightness, score)
 
-    def _level_multicast_callback(self, level: int):
+    def _level_multicast_callback(self, level: int, confidence: float = 100.0):
         if hasattr(self, 'level_observers'):
             for observer in self.level_observers:
-                observer(level)
+                observer(level, confidence)
 
-    def _runes_multicast_callback(self, runes: int):
+    def _runes_multicast_callback(self, runes: int, confidence: float = 100.0):
         if hasattr(self, 'runes_observers'):
             for observer in self.runes_observers:
-                observer(runes)
+                observer(runes, confidence)
             
     def start_capture(self) -> None:
         if self.engine:

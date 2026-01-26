@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QCursor
 from PyQt6.QtCore import Qt, QObject
 from src.services.base_service import ITrayService
 from abc import ABCMeta
@@ -35,16 +35,45 @@ class TrayService(QObject, ITrayService, metaclass=TrayMeta):
         
         self.menu.addSeparator()
         
+        # Debug Inspector
+        action_debug = self.menu.addAction("Debug Inspector")
+        action_debug.triggered.connect(self.launcher.show_inspector_ui)
+        
+        self.menu.addSeparator()
+        
         # Quit Action
         action_quit = self.menu.addAction("Quit")
         action_quit.triggered.connect(self.quit_app)
         
         # Revert to standard context menu to fix crash
-        self.tray_icon.setContextMenu(self.menu)
+        # self.tray_icon.setContextMenu(self.menu) # DISABLE standard context menu
+        self.tray_icon.activated.connect(self.on_tray_activated)
         self.tray_icon.show()
         
         return True
         
+    def on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Context:
+            if self.menu:
+                # Critical Fix for "Menu Behind Taskbar"
+                # We must force the application to the foreground before showing the menu.
+                # Attempt to raise any active window.
+                try:
+                    if hasattr(self.launcher, 'settings') and self.launcher.settings and self.launcher.settings.isVisible():
+                        self.launcher.settings.raise_()
+                    elif hasattr(self.launcher, 'inspector_window') and self.launcher.inspector_window and self.launcher.inspector_window.isVisible():
+                        self.launcher.inspector_window.raise_()
+                    elif hasattr(self.launcher, 'overlay_service') and self.launcher.overlay_service.unified_overlay:
+                        self.launcher.overlay_service.unified_overlay.raise_()
+                except Exception as e:
+                    # Don't let raising windows crash the tray
+                    pass
+                
+                self.launcher.app.processEvents()
+                
+                # Show menu at cursor position
+                self.menu.exec(QCursor.pos())
+
     def shutdown(self) -> None:
         if self.tray_icon:
             self.tray_icon.hide()
