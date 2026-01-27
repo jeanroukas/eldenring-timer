@@ -1,0 +1,33 @@
+{
+    "session_summary": {
+        "session_id": 222,
+        "phase": "STARTUP",
+        "total_death_loss": 0,
+        "death_count": 0,
+        "recovery_count": 0,
+        "spent_at_merchants": 0,
+        "current_level": 1,
+        "death_history": []
+    },
+    "events": [
+        {
+            "timestamp": 1769486478.0025678,
+            "time_str": "05:01:18",
+            "event": "SESSION_STARTED",
+            "data": {
+                "run_count": 222,
+                "phase": "STARTUP",
+                "level": 1
+            }
+        },
+        {
+            "timestamp": 1769486479.0829656,
+            "time_str": "05:01:19",
+            "event": "SYSTEM_RESOURCE_STATS",
+            "data": {
+                "cpu": 0.0,
+                "ram": 71.6
+            }
+        }
+    ]
+}

@@ -468,6 +468,10 @@ class StateService(IStateService):
                             # If total jumps unreasonably high (e.g. > last + level_cost/2) without a boss event,
                             # clamp it to prevent graph scale ruin.
                             delta = current_calc - self.last_valid_total_runes
+                            
+                            # Initialize total_accumulated to prevent UnboundLocalError
+                            total_accumulated = self.last_valid_total_runes
+                            
                             if delta > 0 and self.current_phase_index >= 0:
                                 # If delta is huge (> 50k or > 50% level cost) and NO Boss kill recently...
                                 # We could clamp upward spikes, but we MUST allow downward regressions (holes).
@@ -495,21 +499,16 @@ class StateService(IStateService):
                                      self.last_valid_total_runes = total_accumulated
                                 else:
                                      self.last_valid_total_runes = total_accumulated
-
-                                # FORCE 1 for first 15s (User request: "tricher sur le graph")
-                                
-                                # FORCE 1 for first 15s (User request: "tricher sur le graph")
-                                # We use the length of history as the time index (approx 1s per tick)
-                                if len(self.run_accumulated_history) < 15:
-                                     total_accumulated = 1
-                                
-                                # FORCE FREEZE at Boss 3 (Final Boss) - Phase Index 11+
-                                # User request: "le graff s'arrete au debut du boss 3"
-                                elif self.current_phase_index >= 11:
-                                     total_accumulated = self.last_valid_total_runes
-                                
-                                else:
-                                     total_accumulated = self.last_valid_total_runes
+                            
+                            # FORCE 1 for first 15s (User request: "tricher sur le graph")
+                            # We use the length of history as the time index (approx 1s per tick)
+                            if len(self.run_accumulated_history) < 15:
+                                 total_accumulated = 1
+                            
+                            # FORCE FREEZE at Boss 3 (Final Boss) - Phase Index 11+
+                            # User request: "le graff s'arrete au debut du boss 3"
+                            elif self.current_phase_index >= 11:
+                                 total_accumulated = self.last_valid_total_runes
                             
                             # Raw calculation: Current Runes + Pending + Spent (Current snapshot, no retroactive fixes)
                             # We want this to be the "Naive" view.
@@ -682,6 +681,12 @@ class StateService(IStateService):
             self.overlay.set_ocr_score(score)
         
         now = time.time()
+        
+        # --- BLACK SCREEN TRACKING ---
+        if brightness < 20: 
+            self.last_black_screen_end = now
+            # If we are in a black screen, we don't need to process OCR triggers usually
+            # But we continue just in case
         
         # 1. Clean Buffer
         self.trigger_buffer = [item for item in self.trigger_buffer if now - item[0] <= self.buffer_window]
@@ -961,7 +966,7 @@ class StateService(IStateService):
         self.current_run_level = 1
         
         # Force UI Update
-        self.overlay.set_stats(self._get_stats_dict())
+        self.overlay.update_run_stats(self._get_stats_dict())
         
         logger.info("Run reset complete")
 
@@ -989,6 +994,13 @@ class StateService(IStateService):
         if self.level_consensus_count >= required_consensus:
             # Only update if changed (or first time after init)
             if level != self.current_run_level:
+                # If run is NOT active, just update UI and exit to prevent logging/side-effects
+                if self.current_phase_index == -1:
+                    self.current_run_level = level
+                    self.schedule(0, lambda: self.update_runes_display(level))
+                    self.level_consensus_count = 0 
+                    return
+
                 old_level = self.current_run_level
                 
                 # --- CANCEL PENDING SPENDING ---
@@ -1003,10 +1015,18 @@ class StateService(IStateService):
                 # We allow up to +3 levels in one update to handle fast menuing.
                 # BUT, if we are desynced (e.g. system thinks Lvl 4, actual is Lvl 9), we MUST allow correction
                 # if the new value is stable for a long time.
+                
+                # CRITICAL FIX: During the first 30 seconds of a session, allow immediate level sync
+                # This handles the case where the timer starts at level 1 but the player is already at level 7+
+                session_age = time.time() - self.run_start_time if hasattr(self, 'run_start_time') else 999
+                is_early_session = session_age < 30.0
+                
                 if level > old_level + 3:
-                     # If we have seen this "impossible" value consistently for ~5 seconds (10 reads at 0.5s interval),
-                     # we assume the system is desynced and force a correction.
-                     if self.level_consensus_count < 10:
+                     # If we're in the first 30 seconds, accept the level immediately (startup sync)
+                     if is_early_session:
+                         logger.info(f"EARLY SESSION: Accepting level jump {old_level}→{level} (startup sync)")
+                     # Otherwise, require sustained consensus
+                     elif self.level_consensus_count < 10:
                          logger.warning(f"IGNORED Level Jump {old_level}->{level} (Too large). Waiting for sustained consensus ({self.level_consensus_count}/10).")
                          self.add_debug_warning(f"Ignored Level Jump {old_level}->{level}")
                          return
@@ -1020,8 +1040,11 @@ class StateService(IStateService):
                 # Rejected: Drop > 1 (e.g. 9 -> 4).
                 # Rejected: Drop to 1 (Accidental Reset). Now requires Force Correction (5s).
                 if old_level - level > 1:
-                     # Check for Force Correction (Desync)
-                     if self.level_consensus_count < 10:
+                     # If we're in the first 30 seconds, accept the level immediately (startup sync)
+                     if is_early_session:
+                         logger.info(f"EARLY SESSION: Accepting level drop {old_level}→{level} (startup sync)")
+                     # Otherwise, require consensus
+                     elif self.level_consensus_count < 10:
                          logger.warning(f"IGNORED Massive Level Drop {old_level}->{level} (Impossible > 1 drop). Keeping {old_level}. Waiting for consensus ({self.level_consensus_count}/10).")
                          self.add_debug_warning(f"Ignored Impossible Drop {old_level}->{level}")
                          # Do NOT reset consensus here, keep counting!
@@ -1180,6 +1203,16 @@ class StateService(IStateService):
                 self.level_consensus_count = 0 
 
     def on_runes_detected(self, runes: int, confidence: float = 100.0):
+        # Update internal state (Always active for UI)
+        self.last_runes_reading = runes
+        
+        # If run is not active, we just update the UI (via current_runes) but NOT history
+        if self.current_phase_index == -1:
+            self.current_runes = runes
+            # Force simple UI update
+            self.update_runes_display(self.current_run_level)
+            return
+        
         if not hasattr(self, 'current_runes'):
             self.current_runes = 0
             self.last_runes_reading = 0
@@ -1620,8 +1653,8 @@ class StateService(IStateService):
             
         return 0
 
-    def handle_trigger(self, trigger_text: str) -> bool:
-        if not self.is_transition_allowed(trigger_text):
+    def handle_trigger(self, trigger_text: str, is_manual: bool = False) -> bool:
+        if not self.is_transition_allowed(trigger_text, is_manual=is_manual):
             return False
 
         if self.current_session_id == -1:
@@ -1642,14 +1675,27 @@ class StateService(IStateService):
         
         return result
         
-    def is_transition_allowed(self, target_day: str) -> bool:
+    def is_transition_allowed(self, target_day: str, is_manual: bool = False) -> bool:
         """
-        STRICT STATE MACHINE (User Request):
+        STRICT STATE MACHINE (User Request) - WITH OCR/MANUAL OVERRIDE:
         - Day 1: Only if Reset/Startup. blocked if deep in run (Level > 5 or Runes > 100).
-        - Day 2: Only if Phase is Boss 1 (Index 4).
-        - Day 3: Only if Phase is Boss 2 (Index 9).
+        - Day 2: Preferred if Phase is Boss 1 (Index 4), BUT also allowed if:
+            * OCR detects "JOUR II" (is_manual=False from OCR)
+            * User manually triggers via hotkey (is_manual=True)
+        - Day 3: Preferred if Phase is Boss 2 (Index 9), BUT also allowed if:
+            * OCR detects "JOUR III" 
+            * User manually triggers via hotkey
         """
         if target_day == "DAY 1":
+            # Guard: OCR triggers for Day 1 must follow a black screen (within 15s)
+            # Exception: Manual Trigger
+            if not is_manual:
+                last_black = getattr(self, 'last_black_screen_end', 0)
+                if time.time() - last_black > 15.0:
+                    if self.config.get("debug_mode"):
+                        logger.debug(f"BLOCKED Transition to DAY 1: No recent black screen (Last: {last_black}).")
+                    return False
+
             # Block accidental Day 1 resets if we are seemingly deep in a run
             # Exception: Manual Trigger or Startup
             if self.current_run_level > 5 or getattr(self, 'current_runes', 0) > 200:
@@ -1658,23 +1704,46 @@ class StateService(IStateService):
             return True
             
         elif target_day == "DAY 2":
-            # Must be in Boss 1 Phase (Index 4)
-            # Or if we want to allow Late Detection (e.g. forgot to split), maybe?
-            # User said: "jour 2 uniquement si on est au boos jour 1"
+            # IDEAL: Must be in Boss 1 Phase (Index 4)
             if self.current_phase_index == 4: # Boss 1
                  return True
-            else:
-                 logger.warning(f"BLOCKED Transition to DAY 2: Current Phase {self.current_phase_index} is not Boss 1 (4).")
-                 return False
+            
+            # FALLBACK: Allow if OCR detected "JOUR II" or manual hotkey
+            # This handles cases where phase progression is out of sync
+            if is_manual:
+                logger.info(f"DAY 2 Transition ALLOWED (Manual Override): Phase {self.current_phase_index}")
+                return True
+            
+            # If not manual, check if we're at least past the early game
+            # (e.g., level > 5 or time > 10 minutes)
+            elapsed_time = len(self.run_accumulated_history) if hasattr(self, 'run_accumulated_history') else 0
+            if self.current_run_level >= 5 or elapsed_time > 600:
+                logger.info(f"DAY 2 Transition ALLOWED (OCR Detection + Progress Check): Level {self.current_run_level}, Time {elapsed_time}s")
+                return True
+            
+            logger.warning(f"BLOCKED Transition to DAY 2: Phase {self.current_phase_index} != Boss 1 (4), Level {self.current_run_level} < 5, Time {elapsed_time}s < 600s")
+            return False
 
         elif target_day == "DAY 3":
-            # Must be in Boss 2 Phase (Index 9)
+            # IDEAL: Must be in Boss 2 Phase (Index 9)
             if self.current_phase_index == 9: # Boss 2
                  return True
-            else:
-                 logger.warning(f"BLOCKED Transition to DAY 3: Current Phase {self.current_phase_index} is not Boss 2 (9).")
-                 return False
-                 
+            
+            # FALLBACK: Allow if manual hotkey
+            if is_manual:
+                logger.info(f"DAY 3 Transition ALLOWED (Manual Override): Phase {self.current_phase_index}")
+                return True
+            
+            # If not manual (OCR detected), check if we're at least in Day 2 or later
+            # and have progressed significantly (level > 10 or time > 20 minutes)
+            elapsed_time = len(self.run_accumulated_history) if hasattr(self, 'run_accumulated_history') else 0
+            if self.current_phase_index >= 5 or self.current_run_level >= 10 or elapsed_time > 1200:
+                logger.info(f"DAY 3 Transition ALLOWED (OCR Detection + Progress Check): Phase {self.current_phase_index}, Level {self.current_run_level}, Time {elapsed_time}s")
+                return True
+                
+            logger.warning(f"BLOCKED Transition to DAY 3: Phase {self.current_phase_index} != Boss 2 (9), Level {self.current_run_level} < 10, Time {elapsed_time}s < 1200s")
+            return False
+             
         return False
 
     def set_phase_by_name_start(self, name_start_str):
@@ -1913,7 +1982,7 @@ class StateService(IStateService):
 
         if not self.triggered_recently:
             logger.info(f"Manual Feedback Applied: {correct_target}")
-            self.handle_trigger(correct_target)
+            self.handle_trigger(correct_target, is_manual=True)  # Pass is_manual=True
             self.triggered_recently = True
             self.schedule(5000, lambda: setattr(self, 'triggered_recently', False))
             
