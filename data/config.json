@@ -26,10 +26,10 @@
     "timer_pos_x": 3147,
     "timer_pos_y": 163,
     "level_region": {
-        "top": 95,
-        "left": 186,
-        "width": 53,
-        "height": 47
+        "top": 98,
+        "left": 189,
+        "width": 45,
+        "height": 38
     },
     "runes_region": {
         "top": 108,
@@ -37,7 +37,7 @@
         "width": 298,
         "height": 58
     },
-    "session_count": 222,
+    "session_count": 336,
     "unified_pos_x": 2779,
     "unified_pos_y": 34,
     "runes_icon_region": {
@@ -51,5 +51,39 @@
         "left": 3353,
         "width": 64,
         "height": 63
+    },
+    "debug_overlay_positions": {
+        "Zone": {
+            "x": 1776,
+            "y": 12
+        },
+        "Level": {
+            "x": 123,
+            "y": 201
+        },
+        "Runes": {
+            "x": 3604,
+            "y": 63
+        }
+    },
+    "ocr_params": {
+        "Runes": {
+            "scale": 1.0,
+            "gamma": 1.0,
+            "thresh": 105,
+            "dilate": 0,
+            "psm": 7,
+            "mode": "Digits",
+            "padding": 20
+        },
+        "Level": {
+            "scale": 1.0,
+            "gamma": 2.8,
+            "thresh": 184,
+            "dilate": 0,
+            "psm": 7.0,
+            "mode": "Digits",
+            "padding": 50
+        }
     }
 }

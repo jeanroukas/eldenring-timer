@@ -65,6 +65,45 @@ class VisionService(IVisionService):
         if self.engine:
             self.engine.set_menu_callback(callback)
 
+    def set_debug_callback(self, callback: Callable[[str, str, float], None]) -> None:
+        if self.engine:
+            self.engine.set_debug_callback(callback)
+
+    def set_debug_image_callback(self, callback: Callable[[str, object, float], None]) -> None:
+        if self.engine:
+            self.engine.set_debug_image_callback(callback)
+
+    def set_ocr_param(self, category: str, key: str, value: float) -> None:
+        if self.engine:
+            self.engine.set_ocr_param(category, key, value)
+
+    def set_region(self, category: str, rect: dict) -> None:
+        if not self.engine: return
+        if category.lower() == "level":
+            self.engine.update_level_region(rect)
+        elif category.lower() == "runes":
+            self.engine.update_runes_region(rect)
+        elif category.lower() == "monitor":
+            self.engine.update_region(rect)
+
+    def capture_training_sample(self, category: str) -> None:
+        if self.engine:
+            self.engine.capture_training_sample(category)
+
+    def save_ocr_profiles(self, profiles: dict) -> None:
+        """Saves the tuner profiles to persistence."""
+        if self.engine:
+            self.engine.ocr_params = profiles
+        
+        # Persist to ConfigService
+        # We need to ensure ConfigService saves to disk
+        # Assuming ConfigService behaves like a dict and saves on set or has a save method?
+        # Let's check ConfigService. It seems to autosave or we might need to trigger it.
+        # Based on previous reads, ConfigService wraps a dict. 
+        # Let's try setting it directly.
+        self.config_service["ocr_params"] = profiles
+        print("VisionService: OCR Profiles saved to config.")
+
     def scan_victory_region(self):
         if self.engine:
             return self.engine.scan_victory_region()
@@ -78,6 +117,10 @@ class VisionService(IVisionService):
     def set_scan_delay(self, delay: float) -> None:
         if self.engine:
             self.engine.set_scan_delay(delay)
+
+    def set_day_ocr_enabled(self, enabled: bool) -> None:
+        if self.engine:
+            self.engine.set_day_ocr_enabled(enabled)
 
     def save_labeled_sample(self, label: str) -> None:
         if self.engine:

@@ -1,7 +1,15 @@
 archive/
 __pycache__/
 *.log
+*.png
+*.jpg
 ocr_log.txt
 .vscode/
-
+data/logs/
+samples/
+samples_training/
+debug_images/
+application.jsonl*
 *.db
+!data/config.json
+!data/ocr_patterns.json

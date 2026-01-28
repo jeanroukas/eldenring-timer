@@ -6,7 +6,7 @@
         },
         "JOURIII": {
             "target": "DAY 3",
-            "weight": 85
+            "weight": 70
         },
         "JOU III": {
             "target": "DAY 3",
@@ -97,20 +97,24 @@
             "weight": 50
         },
         "JOUR 3": {
-            "target": "DAY 3",
+            "target": "DAY 1",
             "weight": 60
         },
         "JOUR 2": {
-            "target": "DAY 2",
+            "target": "DAY 1",
             "weight": 60
-        },
-        "JOURIII": {
-            "target": "DAY 3",
-            "weight": 70
         },
         "JOURI": {
             "target": "DAY 1",
             "weight": 54
+        },
+        "JOUR I,": {
+            "target": "DAY 1",
+            "weight": 70
+        },
+        "JOUR I.": {
+            "target": "DAY 1",
+            "weight": 70
         }
     },
     "stats": {

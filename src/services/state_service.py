@@ -1,24 +1,25 @@
 import time
 import datetime
 import winsound
-import subprocess
 import threading
 import os
 import sys
 import json
 from collections import deque
-import time
-import math
 from typing import Dict, Any, List, Optional
-from src.services.base_service import IStateService, IConfigService, IVisionService, IOverlayService, IDatabaseService, IAudioService, ITrayService
-from src.pattern_manager import PatternManager
 try:
     import keyboard
 except ImportError:
     keyboard = None
 import psutil
+import subprocess
+
+from src.services.base_service import IStateService, IConfigService, IVisionService, IOverlayService, IDatabaseService, IAudioService, ITrayService
+from src.pattern_manager import PatternManager
 from src.services.rune_data import RuneData
-from src.services.game_logic import NightreignLogic
+from src.core.session import GameSession
+from src.core.game_rules import GameRules
+from src.core.events import bus, LevelDetectedEvent, RunesDetectedEvent, MenuDetectedEvent, PhaseChangeEvent, EarlyGameDetectedEvent
 from src.logger import logger
 
 class StateService(IStateService):
@@ -30,6 +31,8 @@ class StateService(IStateService):
         self.audio = audio
         self.tray = tray
         
+        # Session State
+        self.session: Optional[GameSession] = GameSession()
         self.current_session_id = -1
         
         self.running = False
@@ -54,11 +57,11 @@ class StateService(IStateService):
             {"name": "Day 3 - Preparation", "duration": 0},
             {"name": "Day 3 - Final Boss", "duration": 0}
         ]
-        self.current_phase_index = -1
-        self.start_time: Optional[float] = None
-        self.boss3_start_time: Optional[float] = None
-        self.day1_detection_time: Optional[float] = None
-        self.timer_frozen = False
+        self.session.phase_index = -1
+        self.session.start_time: Optional[float] = None
+        self.session.boss3_start_time: Optional[float] = None
+        self.session.day1_detection_time: Optional[float] = None
+        self.session.timer_frozen = False
         
         # Buffering Logic
         self.trigger_buffer = [] 
@@ -109,14 +112,27 @@ class StateService(IStateService):
         self.last_display_level = 1
         self.last_display_runes = 0
         
+        # Rune Validation State
+        self.gain_verification_candidate = -1
+        self.spike_persistence = 0
+        self.runes_uncertain = False
+        self.runes_uncertain_since = 0
+        self.pre_run_spam_limit = 0
+        
         # Menu Detection State
         self.is_in_menu = False
         self._was_in_menu = False  # Track previous state for exit detection
         self._menu_first_detected = 0  # Timestamp of first menu detection
         self._menu_validated = False  # True after 3s of continuous detection
+        
+        # Early Game Detection State
+        self.waiting_for_day1 = False  # True when Level 1 detected, waiting for JOUR I
 
     def initialize(self) -> bool:
         logger.info("StateService: Initializing...")
+        logger.update_context("phase", "Waiting")
+        logger.update_context("session_id", "init")
+        
         self.running = True
         
         # Retroactive Death State
@@ -128,17 +144,31 @@ class StateService(IStateService):
         
         # Start Vision Capture Loop
         self.vision.start_capture()
+        
+        # Initial Day OCR state
+        self._update_day_ocr_state()
+        
+        # HYBRID ARCHITECTURE: 
+        # 1. StateService Acts as the "Bridge" transforming Vision Callbacks -> Events
+        # 2. StateService ALSO listens to events (Self-Loop for logic isolation)
+        
+        # Direct Callbacks (Legacy/Bridge)
         self.vision.add_observer(self.on_ocr_result)
-        self.vision.add_level_observer(self.on_level_detected)
-        self.vision.add_runes_observer(self.on_runes_detected)
-        self.vision.set_menu_callback(self.on_menu_screen_detected)
+        self.vision.add_level_observer(lambda lvl, conf: bus.publish(LevelDetectedEvent(lvl, conf)))
+        self.vision.add_runes_observer(lambda runes, conf: bus.publish(RunesDetectedEvent(runes, conf)))
+        self.vision.set_menu_callback(lambda is_open: bus.publish(MenuDetectedEvent(is_open)))
 
-        self.current_run_level = 1
+        # Event Subscriptions
+        bus.subscribe(LevelDetectedEvent, self._handle_level_event)
+        bus.subscribe(RunesDetectedEvent, self._handle_runes_event)
+        bus.subscribe(MenuDetectedEvent, self._handle_menu_event)
+
+        self.session.current_run_level = 1
         self.pending_level = None
         self.level_consensus_count = 0
         
         # Rune History & RPS (40s Window)
-        self.current_runes = 0
+        self.session.current_runes = 0
         self.last_runes_reading = 0
         self.rune_gains_history = deque([0] * 40, maxlen=40) # 40 seconds
         self.smoothed_rps = 0.0
@@ -148,12 +178,12 @@ class StateService(IStateService):
         
         # Advanced Rune & Death Stats
         self.spent_at_merchants = 0
-        self.death_count = 0
-        self.recovery_count = 0 # New: Track recoveries
+        self.session.death_count = 0
+        self.session.recovery_count = 0 # New: Track recoveries
         self.death_history = [] 
         self.total_death_loss = 0
         self.lost_runes_pending = 0 
-        self.graph_events = [] 
+        self.session.graph_events = [] 
         self.permanent_loss = 0 
         self._ignore_next_rune_drop = False
         self._ignore_next_rune_gain = False
@@ -169,12 +199,13 @@ class StateService(IStateService):
         self.last_stable_runes_time = time.time()
         
         # --- NIGHTREIGN ANALYTICS CONSTANTS ---
-        self.NR_TOTAL_REQ = 550000 # Farming + Bosses
-        self.NR_BOSS_DROPS = 50000 + 100000 
-        self.NR_FARMING_GOAL = 400000 # Adjusted for Lvl 14 at 40m
-        self.NR_DAY_DURATION = 1200 # 20 mins per day
-        self.NR_TOTAL_TIME = 2400 # 40 mins farming time
-        self.NR_SNOWBALL = 1.7
+        self.NR_TOTAL_REQ = 512936 # Lvl 1->15 (Exact)
+        self.NR_BOSS_DROPS = 50000 + 50000 # Boss 1 + Boss 2
+        self.NR_FARMING_GOAL = 412936 # Farming Only (Target - Bosses)
+        self.NR_DAY_DURATION = 840 # 14 mins per day (270+180+210+180)
+        self.NR_TOTAL_TIME = 1680 # 28 mins farming time (2 days)
+        self.NR_SNOWBALL_D1 = 1.35
+        self.NR_SNOWBALL_D2 = 1.15
         
         # Transaction History (for correction)
         self.recent_spending_history = [] # List of (timestamp, amount)
@@ -183,12 +214,13 @@ class StateService(IStateService):
         self.graph_log_file = ""
         self.graph_log_data = []
         self.last_graph_save = 0
+        self.last_graph_log_time = 0
         self.graph_start_time = 0 # Timestamp when graph history started
 
         # --- FULL-RUN HISTORY (User Request) ---
-        self.run_accumulated_history = [] # Corrected/Cleaned History
+        self.session.run_accumulated_history = [] # Corrected/Cleaned History
         self.run_accumulated_raw = []     # Raw/Dirty History (For diff visualization)
-        self.day_transition_markers = [] # List of (index, day_name)
+        self.session.day_transition_markers = [] # List of (index, day_name)
         
         # Debug / Inspector State
         self.recent_warnings = deque(maxlen=20)
@@ -208,12 +240,35 @@ class StateService(IStateService):
         # Setup Hotkeys
         if keyboard:
             try:
-                keyboard.add_hotkey('ctrl+shift+&', lambda: self.handle_manual_feedback("DAY 1"))
-                keyboard.add_hotkey('ctrl+shift+é', lambda: self.handle_manual_feedback("DAY 2"))
-                keyboard.add_hotkey('ctrl+shift+"', lambda: self.handle_manual_feedback("DAY 3"))
-                keyboard.add_hotkey('ctrl+shift+(', self.handle_false_positive)
-                keyboard.add_hotkey('ctrl+shift+b', self.skip_to_boss)
-                keyboard.add_hotkey('ctrl+shift+r', self.restart_application)
+                # Debug Wrapper to catch errors and log key presses
+                def _bind(key, func, name):
+                    def _wrapper():
+                        logger.info(f"HOTKEY PRESSED: {key} ({name})")
+                        try:
+                            func()
+                            logger.info(f"HOTKEY EXECUTED: {key}")
+                        except Exception as e:
+                            logger.error(f"HOTKEY ERROR {key}: {e}", exc_info=True)
+                            try: winsound.Beep(200, 200)
+                            except: pass
+                    keyboard.add_hotkey(key, _wrapper)
+                    logger.info(f"Bound {key} -> {name}")
+
+                # -- STANDARD F-KEYS MAPPING --
+                _bind('ctrl+f5', lambda: self.handle_manual_feedback("DAY 1", force=True), "RESET")
+                _bind('f6', lambda: self.handle_manual_feedback("DAY 2", force=True), "FORCE_D2")
+                _bind('f7', lambda: self.handle_manual_feedback("DAY 3", force=True), "FORCE_D3")
+                
+                # F8: Boss Skip / Correction
+                _bind('f8', self.skip_to_boss, "BOSS_SKIP")
+                
+                _bind('f9', self.overlay.toggle, "UI_TOGGLE")
+                _bind('f10', self.handle_false_positive, "UNDO")
+                # F11: Quit (Must be scheduled on Main Thread to avoid crash)
+                _bind('f11', lambda: self.overlay.schedule(0, self.tray.quit_app) if self.tray else os._exit(0), "QUIT")
+                
+            except Exception as e:
+                logger.error(f"Failed to register hotkeys: {e}")
             except Exception as e:
                 logger.error(f"Failed to register hotkeys: {e}")
 
@@ -228,13 +283,18 @@ class StateService(IStateService):
     def start_new_session(self, phase_name: str):
         self.session_count += 1
         self.config.set("session_count", self.session_count)
+        
+        # --- LOG CONTEXT UPDATE ---
+        logger.update_context("session_id", self.session_count)
+        logger.update_context("phase", phase_name)
+        
         self.current_phase = phase_name
         self.session_log = []
         self.log_dir = os.path.join(os.getcwd(), "data", "logs")
         os.makedirs(self.log_dir, exist_ok=True)
         
         # New Naming Convention: Run_[Count]_[Phase]_[YYYYMMDD]_[HHMMSS].json
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = time.strftime("%Y%m%d_%H%M%S")
         self.session_filename = f"Run_{self.session_count}_{phase_name}_{ts}.json"
         
         # Dedicated Graph Log
@@ -251,19 +311,37 @@ class StateService(IStateService):
         })
 
     def log_session_event(self, event_type: str, data: dict = None):
+        """
+        Unified Logging:
+        1. Writes to JSONL (Telemetry Stream) for analysis/replay.
+        2. Writes to SQLite (Persistence) for stats.
+        3. Writes to Legacy JSON (Backup) - Optional, can be deprecated.
+        """
         event = {
             "timestamp": time.time(),
             "time_str": datetime.datetime.now().strftime("%H:%M:%S"),
-            "event": event_type,
+            "event_type": event_type,
             "data": data or {}
         }
+        
+        # 1. Telemetry Stream (The "NASA" Way)
+        logger.info(f"GAME EVENT: {event_type}", extra={"data": event, "type": "GAME_EVENT"})
+        
+        # 2. Add to internal memory (legacy support)
         self.session_log.append(event)
-        if self.config.get("debug_mode"):
-            logger.info(f"[SESSION LOG] {event_type}: {data}")
+        
+        # 3. Persist to DB
+        if self.current_session_id != -1:
+            self.db.log_event(self.current_session_id, event_type, json.dumps(data))
+            
         # Save on every event for robustness
         self.save_session_log()
 
     def save_session_log(self):
+        # Legacy File Save - DISABLED (Redundant with app.jsonl and stats.db)
+        return
+        
+        """
         try:
             filepath = os.path.join(self.log_dir, self.session_filename)
             # ... full_data update ... (omitted for brevity, keep existing logic if editing entire function)
@@ -274,10 +352,10 @@ class StateService(IStateService):
                     "session_id": self.session_count,
                     "phase": self.current_phase,
                     "total_death_loss": self.total_death_loss,
-                    "death_count": self.death_count,
-                    "recovery_count": self.recovery_count,
+                    "death_count": self.session.death_count,
+                    "recovery_count": self.session.recovery_count,
                     "spent_at_merchants": self.spent_at_merchants,
-                    "current_level": self.current_run_level,
+                    "current_level": self.session.current_run_level,
                     "death_history": self.death_history
                 },
                 "events": self.session_log
@@ -287,6 +365,7 @@ class StateService(IStateService):
                 json.dump(full_data, f, indent=4)
         except Exception as e:
             logger.error(f"Failed to save session log: {e}")
+        """
 
     def save_graph_log(self):
         try:
@@ -314,7 +393,11 @@ class StateService(IStateService):
                 last_sys_check = now
             
             # 3. Update Timer (every 200ms)
-            self.update_timer_task()
+            try:
+                self.update_timer_task()
+            except Exception as e:
+                logger.error(f"CRASH IN update_timer_task: {e}", exc_info=True)
+                time.sleep(1.0) # Prevent tight loop spam
             
             time.sleep(0.2)
 
@@ -347,7 +430,7 @@ class StateService(IStateService):
             logger.error(f"StateService: check_process_task error: {e}")
 
     def update_timer_task(self):
-        if self.timer_frozen or self.is_hibernating:
+        if self.session.timer_frozen or self.is_hibernating:
             return
 
         # if self.paused:
@@ -362,10 +445,10 @@ class StateService(IStateService):
                 
                 # --- GHOST CANCELLATION ---
                 # If runes return to their previous high level, it was an OCR flicker
-                if self.current_runes >= old_runes_val * 0.98:
+                if self.session.current_runes >= old_runes_val * 0.98:
                     self.pending_spending_event = None
                     if self.config.get("debug_mode"):
-                        logger.info(f"Ghost Spending Cancelled: Runes returned to {self.current_runes} (from drop to {old_runes_val-spent_val})")
+                        logger.info(f"Ghost Spending Cancelled: Runes returned to {self.session.current_runes} (from drop to {old_runes_val-spent_val})")
                     
                     # --- RETROACTIVE GRAPH REPAIR (User: "supprimer et redessiner") ---
                     # The graph recorded a dip during the pending state. Fix it by flattening the last ~5-10s.
@@ -373,14 +456,14 @@ class StateService(IStateService):
                     # The "Raw" history remains untouched (showing the dip).
                     try:
                         restored_val = self.last_valid_total_runes # Should be high again
-                        history_len = len(self.run_accumulated_history)
+                        history_len = len(self.session.run_accumulated_history)
                         # Go back 60 seconds (Deep Repair for user request)
                         start_idx = max(0, history_len - 60)
                         for i in range(start_idx, history_len):
                             # Only pull UP, never pull down (in case we had real gains mixed in?)
                             # Actually, just flattening is safer for a ghost cancel.
-                            if self.run_accumulated_history[i] < restored_val:
-                                self.run_accumulated_history[i] = restored_val
+                            if self.session.run_accumulated_history[i] < restored_val:
+                                self.session.run_accumulated_history[i] = restored_val
                     except Exception as e:
                         logger.error(f"Graph Repair Error: {e}")
 
@@ -389,16 +472,16 @@ class StateService(IStateService):
                     # STRICT Validation: Must be a multiple of 100 (User Request)
                     if spent_val % 100 == 0:
                         self.spent_at_merchants += spent_val
-                        self.log_session_event("SPENDING", {"spent": spent_val, "total_spent": self.spent_at_merchants, "current": self.current_runes})
+                        self.log_session_event("SPENDING", {"spent": spent_val, "total_spent": self.spent_at_merchants, "current": self.session.current_runes})
                         self.recent_spending_history.append((time.time(), spent_val))
                     else:
                         # REJECT LOGIC
                         if self.config.get("debug_mode"):
-                            logger.info(f"Spending Rejected (Non-standard amount): {spent_val} (Old: {old_runes_val} -> New: {self.current_runes}). Assuming OCR Error.")
+                            logger.info(f"Spending Rejected (Non-standard amount): {spent_val} (Old: {old_runes_val} -> New: {self.session.current_runes}). Assuming OCR Error.")
                         
                         # We must revert the "current_runes" to "old_runes_val" internally?
                         # No, if we reject the spending, we just assume the drop was an error.
-                        # However, 'self.current_runes' is constantly updated by OCR.
+                        # However, 'self.session.current_runes' is constantly updated by OCR.
                         # IF the OCR stabilizes on this new weird value, we might have an issue.
                         # But typically, if it's 6499 instead of 6500, it might flicker back and forth.
                         # For now, by NOT adding it to 'spent_at_merchants', we effectively treat it as missing wealth (Death/Loss) or just ignore it in the graph math?
@@ -418,9 +501,9 @@ class StateService(IStateService):
                     self._ignore_next_rune_gain = False
                     self._ignore_next_rune_gain_grace_period = None
             
-            if self.start_time is not None and self.current_phase_index >= 0:
-                phase = self.phases[self.current_phase_index]
-                elapsed = time.time() - self.start_time
+            if self.session.start_time is not None and self.session.phase_index >= 0:
+                phase = self.phases[self.session.phase_index]
+                elapsed = time.time() - self.session.start_time
                 
                 if phase["duration"] > 0:
                     remaining = max(0, phase["duration"] - elapsed)
@@ -428,8 +511,9 @@ class StateService(IStateService):
                     
                     # Phase Auto Advance
                     if remaining == 0:
-                        self.current_phase_index += 1
-                        self.start_time = time.time()
+                        self.session.phase_index += 1
+                        self.session.start_time = time.time()
+                        self._update_day_ocr_state()
                         self._check_rps_pause()
                         return
 
@@ -442,11 +526,11 @@ class StateService(IStateService):
                             self.pending_rps_gain = 0
                             
                             # --- FULL-RUN GRAPH UPDATE ---
-                            spent_on_levels = RuneData.get_total_runes_for_level(self.current_run_level) or 0
+                            spent_on_levels = RuneData.get_total_runes_for_level(self.session.current_run_level) or 0
                             
                             # STRATEGY: Effective Wealth (Holes for Merchant Spending/Permanent Loss)
                             # We only count what is AVAILABLE for leveling.
-                            current_calc = spent_on_levels + self.current_runes + self.lost_runes_pending
+                            current_calc = spent_on_levels + self.session.current_runes + self.lost_runes_pending
                             
                             # For Session Logs, we also calculate the Total Lifetime Wealth (generated total)
                             total_lifetime_wealth = current_calc + self.spent_at_merchants + self.permanent_loss
@@ -459,7 +543,7 @@ class StateService(IStateService):
                                      # If Runes are still "High" (indicative of pre-spend state), mask the cost.
                                      # We assume if current > 20% of cost, we might still be seeing old value.
                                      # (Unless user literally farmed back 20% in 5 seconds? Unlikely inside menu).
-                                     if self.current_runes >= level_cost * 0.2:
+                                     if self.session.current_runes >= level_cost * 0.2:
                                           current_calc -= level_cost
                                 else:
                                      self._level_up_pending_sync = None
@@ -472,12 +556,12 @@ class StateService(IStateService):
                             # Initialize total_accumulated to prevent UnboundLocalError
                             total_accumulated = self.last_valid_total_runes
                             
-                            if delta > 0 and self.current_phase_index >= 0:
+                            if delta > 0 and self.session.phase_index >= 0:
                                 # If delta is huge (> 50k or > 50% level cost) and NO Boss kill recently...
                                 # We could clamp upward spikes, but we MUST allow downward regressions (holes).
                                 pass
 
-                                # STRATEGY: GRAPH RATCHET (Via NightreignLogic)
+                                # STRATEGY: GRAPH RATCHET (Via GameRules)
                                 # Enforce Monotonicity using central rules
                                 
                                 # Check if we have valid reasons to drop
@@ -486,7 +570,7 @@ class StateService(IStateService):
                                 # the current calc is allowed to be lower.
                                 
                                 # Validate using Logic Class
-                                total_accumulated = NightreignLogic.validate_graph_monotonicity(
+                                total_accumulated = GameRules.validate_graph_monotonicity(
                                     current_calc, 
                                     self.last_valid_total_runes,
                                     is_death=False, # Death handled separately
@@ -502,12 +586,12 @@ class StateService(IStateService):
                             
                             # FORCE 1 for first 15s (User request: "tricher sur le graph")
                             # We use the length of history as the time index (approx 1s per tick)
-                            if len(self.run_accumulated_history) < 15:
+                            if len(self.session.run_accumulated_history) < 15:
                                  total_accumulated = 1
                             
                             # FORCE FREEZE at Boss 3 (Final Boss) - Phase Index 11+
                             # User request: "le graff s'arrete au debut du boss 3"
-                            elif self.current_phase_index >= 11:
+                            elif self.session.phase_index >= 11:
                                  total_accumulated = self.last_valid_total_runes
                             
                             # Raw calculation: Current Runes + Pending + Spent (Current snapshot, no retroactive fixes)
@@ -517,11 +601,12 @@ class StateService(IStateService):
                             # For simplicity, we'll store the 'current_calc' BEFORE it was potentially clamped/adjusted?
                             # Actually `current_calc` line 390 is good.
                             
-                            self.run_accumulated_history.append(total_accumulated)
+                            self.session.run_accumulated_history.append(total_accumulated)
                             
                             # Raw history: We want it to be immutable.
                             self.run_accumulated_raw.append(current_calc)
                             
+
                             # --- GRAPH LOGGING ---
                             graph_entry = {
                                 "t": float(f"{time.time():.2f}"),
@@ -532,7 +617,7 @@ class StateService(IStateService):
                                 "comps": {
                                     "lvl_cost": spent_on_levels,
                                     "merch": self.spent_at_merchants,
-                                    "curr": self.current_runes,
+                                    "curr": self.session.current_runes,
                                     "pend": self.lost_runes_pending,
                                     "perm": self.permanent_loss,
                                     "uncertain": self.runes_uncertain,
@@ -541,16 +626,30 @@ class StateService(IStateService):
                             }
                             self.graph_log_data.append(graph_entry)
                             
+                            # Log every 1s
+                            if time.time() - self.last_graph_log_time >= 1.0:
+                                # logger.info(f"GRAPH DATA: {json.dumps(graph_entry)}")
+                                self.last_graph_log_time = time.time()
+
                             if time.time() - self.last_graph_save >= 5.0:
                                 self.save_graph_log()
                                 self.last_graph_save = time.time()
 
                         self.smoothed_rps = sum(self.rune_gains_history) / 40.0
                     
-                    self.update_runes_display(self.current_run_level)
+                    self.update_runes_display(self.session.current_run_level)
                     mins = int(remaining // 60)
                     secs = int(remaining % 60)
                     timer_str = f"{mins:02}:{secs:02}"
+                    
+                    # AUTO-ADVANCE: When timer expires, move to next phase
+                    if remaining <= 0 and phase["duration"] > 0:
+                        next_idx = self.session.phase_index + 1
+                        if next_idx < len(self.phases):
+                            logger.info(f"Timer expired. Auto-advancing from phase {self.session.phase_index} to {next_idx}")
+                            self.Trigger(next_idx)
+                            # Reset timer for new phase
+                            self.session.start_time = time.time()
                     
                     # Audio Announcements
                     if remaining_int != self.last_announcement_second:
@@ -564,16 +663,16 @@ class StateService(IStateService):
                         self.last_announcement_second = remaining_int
                     
                     # Check for Phase Start Announcement
-                    if self.current_phase_index != self.last_announced_phase:
+                    if self.session.phase_index != self.last_announced_phase:
                         # Skip announcement for the very first phase (Day 1 - Storm) to avoid spam on startup
-                        if "Storm" in phase["name"] and self.current_phase_index != 0:
+                        if "Storm" in phase["name"] and self.session.phase_index != 0:
                              d_min = phase["duration"] // 60
                              d_sec = phase["duration"] % 60
                              msg = "La zone se refermera dans "
                              if d_min > 0: msg += f"{d_min} minutes "
                              if d_sec > 0: msg += f"{d_sec} secondes"
                              self.audio.announce(msg)
-                        self.last_announced_phase = self.current_phase_index
+                        self.last_announced_phase = self.session.phase_index
                 else:
                     # Stopwatch
                     mins = int(elapsed // 60)
@@ -583,7 +682,7 @@ class StateService(IStateService):
                 # prefix = ""
                 # if self.fast_mode_active: prefix += "🔴 "
                 
-                next_idx = self.current_phase_index + 1
+                next_idx = self.session.phase_index + 1
                 if phase["duration"] > 0 and next_idx < len(self.phases) and "Shrinking" in self.phases[next_idx]["name"]:
                     remaining = max(0, phase["duration"] - elapsed)
                     if remaining <= 30 and int(time.time() * 2) % 2 == 0:
@@ -607,8 +706,8 @@ class StateService(IStateService):
                  # Detect transition: Menu (True) -> Game (False)
                  if was_previously_in_menu and not is_currently_in_menu:
                      logger.info("Menu exit detected - Resetting stats for fresh start")
-                     self.current_run_level = 1
-                     self.current_runes = 0
+                     self.session.current_run_level = 1
+                     self.session.current_runes = 0
                      self.last_display_level = 1
                      self.last_display_runes = 0
                      
@@ -616,7 +715,7 @@ class StateService(IStateService):
                  self._was_in_menu = is_currently_in_menu
                      
                  # Force stats update to show "Waiting" in Phase Name area
-                 self.update_runes_display(self.current_run_level)
+                 self.update_runes_display(self.session.current_run_level)
                  
         except Exception as e:
             logger.error(f"CRASH IN UPDATE_TIMER_TASK: {e}")
@@ -674,6 +773,26 @@ class StateService(IStateService):
     def is_stats_stable(self, seconds=1.0) -> bool:
         """Returns True if Level and Runes have been unchanged for the given duration."""
         return (time.time() - self.last_stat_change_time) > seconds
+
+    def _update_day_ocr_state(self):
+        """
+        Dynamically enables/disables the Day OCR Scanning to save resources.
+        User Rules:
+        1. Stop after Day 1 confirmed until Boss 1.
+        2. Stop after Day 2 confirmed until end of run.
+        """
+        phase = self.session.phase_index
+        
+        # ENABLED only when waiting for Day 1 (-1) or Boss 1 (4)
+        should_enable = (phase == -1 or phase == 4)
+        
+        # Re-enable if Victory detected (to wait for next run)
+        if getattr(self, 'victory_detected', False):
+            should_enable = True
+
+        if getattr(self, '_last_day_ocr_state', None) != should_enable:
+            self.vision.set_day_ocr_enabled(should_enable)
+            self._last_day_ocr_state = should_enable
 
     def process_ocr_trigger(self, text, width, offset, word_data, brightness=0, score=0):
         # Update overlay score display immediately
@@ -752,7 +871,7 @@ class StateService(IStateService):
 
             # --- FUZZY DAY LOGIC (User Request) ---
             # If we are in specific Boss Phases, allow ANY "JOUR" detection to trigger next day.
-            fuzzy_day_idx = NightreignLogic.map_fuzzy_day_trigger(normalized, self.current_phase_index)
+            fuzzy_day_idx = GameRules.map_fuzzy_day_trigger(normalized, self.session.phase_index)
             if fuzzy_day_idx:
                  target_day = f"DAY {fuzzy_day_idx}"
                  score = 100.0
@@ -771,13 +890,19 @@ class StateService(IStateService):
                     logger.debug(f"Soft Guard Penalty for {target_day}: {penalty} (Final Score: {score})")
 
             # DEBUG: Print all evaluations
-            if self.config.get("debug_mode") and (target_day or score > 40):
-                logger.debug(f"Eval '{normalized}' -> {target_day} (Score: {score})")
+            if self.config.get("debug_mode") and (target_day or score > 20):
+                if self.waiting_for_day1 and "JOUR" in normalized:
+                     logger.info(f"WAITING_FOR_D1 Eval: '{normalized}' -> {target_day} (Score: {score})")
+                elif target_day or score > 40:
+                     logger.debug(f"Eval '{normalized}' -> {target_day} (Score: {score})")
             
             if target_day and score >= 55:
                 detected_trigger = target_day
                 self.current_matched_pattern = normalized
-                logger.info(f"Trigger Candidate '{normalized}' -> {target_day} (Score: {score})")
+                if self.waiting_for_day1:
+                     logger.info(f"MATCHED Candidate '{normalized}' -> {target_day} (Score: {score})")
+                else:
+                     logger.info(f"Trigger Candidate '{normalized}' -> {target_day} (Score: {score})")
                 
                 if not self.fast_mode_active:
                     self.fast_mode_active = True
@@ -796,7 +921,7 @@ class StateService(IStateService):
 
         if not self.trigger_buffer and not self.fast_mode_active:
              # Exclude Boss 2 (9) and Day 3 Prep (10) from early exit to allow fade detection
-             if self.current_phase_index not in [9, 10]: 
+             if self.session.phase_index not in [9, 10]: 
                  self.overlay.show_recording(False)
                  return
 
@@ -831,6 +956,11 @@ class StateService(IStateService):
                 # Fallback for very high confidence single hit during initial startup?
                 # No, better be safe. Manual Ctrl+Shift+R is the workaround.
                 elif day_counts["DAY 1"] >= 1 and day_scores["DAY 1"] >= 300:
+                    final_decision = "DAY 1"
+                # 3. NASA-GRADE EARLY GAME SYNC: If we are specifically waiting for Day 1
+                # we allow a much lower threshold to ensure we don't miss the fast banner.
+                elif self.waiting_for_day1 and day_counts["DAY 1"] >= 1 and day_scores["DAY 1"] >= 80:
+                    logger.info("🚀 EARLY GAME SYNC: Accept single-hit DAY 1 (waiting_for_day1 active)")
                     final_decision = "DAY 1"
             
         if final_decision and not self.triggered_recently:
@@ -879,13 +1009,13 @@ class StateService(IStateService):
                  self.vision.log_debug(f"DEBUG: BLACK SCREEN ENDED (Dur: {duration:.2f}s, Br: {brightness:.1f})")
                  
                  # Contextual Fade Logic (Day 3 Triggering)
-                 if self.current_phase_index in [9, 10]:
+                 if self.session.phase_index in [9, 10]:
                      # Single Pulse Fade (0.3s - 3.0s)
                      if 0.3 <= duration <= 3.0:
-                         if self.current_phase_index == 9:
+                         if self.session.phase_index == 9:
                              self.vision.log_debug(f">>> FADE SUCCESS: Boss 2 -> Day 3 Prep (Dur: {duration:.2f}s)")
                              self.trigger_day_3()
-                         elif self.current_phase_index == 10:
+                         elif self.session.phase_index == 10:
                              # Wait 10s after entering Day 3 Prep before allowing Final Boss trigger
                              if now - self.last_phase_change_time > 10.0:
                                  self.vision.log_debug(f">>> FADE SUCCESS: Day 3 Prep -> Final Boss (Dur: {duration:.2f}s)")
@@ -898,7 +1028,7 @@ class StateService(IStateService):
         
         # Victory check loop handled separately via `check_victory_loop` 
         # but needs to be triggered.
-        if self.current_phase_index == 11 and not self.victory_check_active and not self.victory_detected:
+        if self.session.phase_index == 11 and not self.victory_check_active and not self.victory_detected:
              self.victory_check_active = True
              self.schedule(int(self.victory_check_interval * 1000), self.check_victory_loop)
 
@@ -937,7 +1067,7 @@ class StateService(IStateService):
             self.overlay.update_timer("🏠 Menu")
         
         # Only reset if we're in an active run (not already in Waiting state)
-        if self.current_phase_index == -1: 
+        if self.session.phase_index == -1: 
             return
 
         logger.info("Resetting run...")
@@ -953,17 +1083,17 @@ class StateService(IStateService):
              self.current_session_id = -1
 
         # Full Reset Logic
-        self.current_phase_index = -1
+        self.session.phase_index = -1
         self.Trigger(-1) # -1 = Waiting/Ready
         
         # Clear Data
-        self.run_accumulated_history = []
+        self.session.run_accumulated_history = []
         self.run_accumulated_raw = []
-        self.graph_events = []
-        self.death_count = 0
-        self.recovery_count = 0
-        self.current_runes = 0
-        self.current_run_level = 1
+        self.session.graph_events = []
+        self.session.death_count = 0
+        self.session.recovery_count = 0
+        self.session.current_runes = 0
+        self.session.current_run_level = 1
         
         # Force UI Update
         self.overlay.update_run_stats(self._get_stats_dict())
@@ -990,18 +1120,29 @@ class StateService(IStateService):
             self.pending_level = level
             self.level_consensus_count = 1
             
-        # Check against dynamic requirement
+        # NASA-grade Early Game Detection: ACTIVATE IMMEDIATELY on first frame 
+        # because the banner might appear very quickly (within 100ms).
+        if level == 1 and self.session.phase_index == -1 and not self.waiting_for_day1:
+            logger.info("🚀 EARLY GAME: Level 1 detected (First Frame) - Activating JOUR I monitoring")
+            self.waiting_for_day1 = True
+            self.session._current_run_level = 1  # Set BEFORE freezing
+            self.session.stats_frozen = True
+            # Emit event
+            bus.publish(EarlyGameDetectedEvent())
+            
+        # Check against dynamic requirement for standard updates
         if self.level_consensus_count >= required_consensus:
             # Only update if changed (or first time after init)
-            if level != self.current_run_level:
+            if level != self.session.current_run_level:
                 # If run is NOT active, just update UI and exit to prevent logging/side-effects
-                if self.current_phase_index == -1:
-                    self.current_run_level = level
+                if self.session.phase_index == -1:
+                    # Bypass freeze for UI sync during pre-run phase
+                    self.session._current_run_level = level
                     self.schedule(0, lambda: self.update_runes_display(level))
                     self.level_consensus_count = 0 
                     return
 
-                old_level = self.current_run_level
+                old_level = self.session.current_run_level
                 
                 # --- CANCEL PENDING SPENDING ---
                 # A level change (up or down) means the rune drop was likely due to leveling or death.
@@ -1018,7 +1159,7 @@ class StateService(IStateService):
                 
                 # CRITICAL FIX: During the first 30 seconds of a session, allow immediate level sync
                 # This handles the case where the timer starts at level 1 but the player is already at level 7+
-                session_age = time.time() - self.run_start_time if hasattr(self, 'run_start_time') else 999
+                session_age = time.time() - self.session.start_time
                 is_early_session = session_age < 30.0
                 
                 if level > old_level + 3:
@@ -1062,26 +1203,26 @@ class StateService(IStateService):
 
                 # --- DEATH LOGIC (TRIPLE LOCK) ---
                 # --- DEATH LOGIC (STRICT STAT BASED) ---
-                # Delegated to NightreignLogic for consistent rules
+                # Delegated to GameRules for consistent rules
                 
-                curr_runes = self.current_runes if hasattr(self, 'current_runes') else 0
+                curr_runes = self.session.current_runes
                 
                 # Pass timestamp of last confirmed black screen
                 last_black_screen = getattr(self, 'last_black_screen_end', 0)
-                is_stat_death = NightreignLogic.is_death_confirmed(old_level, level, curr_runes, last_black_screen, time.time())
+                is_stat_death = GameRules.is_death_confirmed(old_level, level, curr_runes)
                 
                 if is_stat_death:
                      logger.warning(f"DEATH CONFIRMED (Stat Based): Level {old_level}->{level} (-1) & Runes {curr_runes} (<50).")
                 elif level < old_level:
                      # If Logic says NO, but level dropped, it's an OCR error/correction.
-                     logger.warning(f"IGNORED Level Drop {old_level}->{level}: Rejected by NightreignLogic (Runes: {curr_runes}).")
+                     logger.warning(f"IGNORED Level Drop {old_level}->{level}: Rejected by GameRules (Runes: {curr_runes}).")
                      return
 
                 if level < old_level and not is_stat_death:
                      # This is just a Correction (e.g. 8 -> 7) or non-death drop.
                      # Do NOT trigger death. Do NOT revert spending.
                      # Update level silently.
-                     self.current_run_level = level
+                     self.session.current_run_level = level
                      self.schedule(0, lambda: self.update_runes_display(level))
                      return
                      
@@ -1116,10 +1257,10 @@ class StateService(IStateService):
                         if self.last_valid_total_runes < 0: self.last_valid_total_runes = 0
                         # Correct "Entire" history (or reasonably deep) as requested
                         # We go back up to 300 seconds (5 mins) which covers any plausible recent spending
-                        history_len = len(self.run_accumulated_history)
+                        history_len = len(self.session.run_accumulated_history)
                         for i in range(max(0, history_len - 300), history_len):
-                            self.run_accumulated_history[i] -= reverted_amount
-                            if self.run_accumulated_history[i] < 0: self.run_accumulated_history[i] = 0
+                            self.session.run_accumulated_history[i] -= reverted_amount
+                            if self.session.run_accumulated_history[i] < 0: self.session.run_accumulated_history[i] = 0
                     
                     self.recent_spending_history = valid_history
 
@@ -1128,12 +1269,12 @@ class StateService(IStateService):
                     death_runes = self.last_runes_reading 
                     total_loss = death_runes + lost_level_cost + reverted_amount
                     
-                    self.death_count += 1
+                    self.session.death_count += 1
                     self.total_death_loss += total_loss
                     self.lost_runes_pending = total_loss # New bloodstain created
                     
                     death_event = {
-                            "death_num": self.death_count,
+                            "death_num": self.session.death_count,
                             "old_level": old_level,
                             "new_level": level,
                             "runes_at_death": death_runes,
@@ -1143,7 +1284,7 @@ class StateService(IStateService):
                     self.death_history.append(death_event)
                     self.log_session_event("DEATH", death_event)
                     self._ignore_next_rune_drop = True 
-                    self.graph_events.append({"t": time.time(), "type": "DEATH"})
+                    self.session.graph_events.append({"t": time.time(), "type": "DEATH"})
                 
                 # --- LEVEL UP LOGIC ---
                 elif level > old_level:
@@ -1169,10 +1310,10 @@ class StateService(IStateService):
                         if self.last_valid_total_runes < 0: self.last_valid_total_runes = 0
                         # Correct "Entire" history (or reasonably deep) as requested
                         # We go back up to 300 seconds (5 mins) to catch any lingering spending
-                        history_len = len(self.run_accumulated_history)
+                        history_len = len(self.session.run_accumulated_history)
                         for i in range(max(0, history_len - 300), history_len):
-                            self.run_accumulated_history[i] -= reverted_amount
-                            if self.run_accumulated_history[i] < 0: self.run_accumulated_history[i] = 0
+                            self.session.run_accumulated_history[i] -= reverted_amount
+                            if self.session.run_accumulated_history[i] < 0: self.session.run_accumulated_history[i] = 0
                         
                     self.recent_spending_history = valid_history
 
@@ -1197,7 +1338,7 @@ class StateService(IStateService):
                 if self.config.get("debug_mode"):
                     logger.info(f"Level Changed (Consensus): {old_level} -> {level}")
                 
-                self.current_run_level = level
+                self.session.current_run_level = level
                 self.last_stat_change_time = time.time()
                 self.schedule(0, lambda: self.update_runes_display(level))
                 self.level_consensus_count = 0 
@@ -1207,40 +1348,46 @@ class StateService(IStateService):
         self.last_runes_reading = runes
         
         # If run is not active, we just update the UI (via current_runes) but NOT history
-        if self.current_phase_index == -1:
-            self.current_runes = runes
+        if self.session.phase_index == -1:
+            # FLICKER GUARD (Pre-Run) - AGGRESSIVE
+            # The OCR is extremely unstable during startup (Value -> 0 -> Value).
+            # If we drop to 0/low unexpectedly, we just IGNORE it completely if we already have a valid reading.
+            # We assume you don't "lose" runes in the loading screen.
+            if runes < 10 and self.session._current_runes > 100:
+                 return 
+            
+            # Reset spam limiter on valid read
+            if runes > 10: self.pre_run_spam_limit = 0
+
+            # Bypass freeze for UI sync during pre-run phase
+            self.session._current_runes = runes
             # Force simple UI update
-            self.update_runes_display(self.current_run_level)
+            self.update_runes_display(self.session.current_run_level)
             return
         
-        if not hasattr(self, 'current_runes'):
-            self.current_runes = 0
-            self.last_runes_reading = 0
-
         # --- DATA CLEANING (Anti-Noise) ---
         # 1. CHANGE GATE: PROCESS LOGIC ONLY IF VALUE DIFFERS FROM CURRENT CONFIRMED STATE
         # Hallucination Guard (Anti-Noise)
         # We use a persistence counter to allow real "0" readings (Death) to pass through eventually.
-        if self.current_runes > 100 and runes < 10 and not self.in_black_screen:
+        # FIX: Removed `not self.in_black_screen` check. Even in black screen, we shouldn't drop to 0 instantly.
+        # Increased persistence to 10 (approx 2s at 5Hz) to prevent flickering.
+        if self.session.current_runes > 100 and runes < 10:
             self.low_value_persistence = getattr(self, 'low_value_persistence', 0) + 1
-            if self.low_value_persistence < 5: # Hold for 1s (approx 5 frames)
-                if self.config.get("debug_mode"):
-                    logger.debug(f"Ignored Hallucination (Value: {runes}). Persistence: {self.low_value_persistence}/5")
-                return
+            if self.low_value_persistence < 15: # Hold for ~2-3s (Robust Debounce)
+                return # Block update
             else:
                  if self.config.get("debug_mode"): logger.info(f"Hallucination Filter Bypassed: Sustained Low Value ({runes})")
         else:
             self.low_value_persistence = 0
 
-        if runes != self.current_runes:
+        if runes != self.session.current_runes:
             
             # --- TRUST SYSTEM: LOW CONFIDENCE REJECTION ---
             if confidence < 70.0:
-                 if self.config.get("debug_mode") and not self.runes_uncertain:
-                      logger.info(f"Runes Low Confidence ({confidence:.1f}%): {runes}. Setting UNCERTAINTY.")
                  self.runes_uncertain = True
                  self.runes_uncertain_since = time.time()
-                 if confidence < 50.0: return # Junk reading
+                 if confidence < 50.0: 
+                     return # Junk reading
 
             # --- BURST VALIDATION (Mandatory for Level/Runes) ---
             burst_results = self.vision.request_runes_burst()
@@ -1252,61 +1399,47 @@ class StateService(IStateService):
             
             # Require Consensus (3/5)
             if frequency < 3:
-                 if self.config.get("debug_mode"):
-                     logger.debug(f"Burst Inconclusive for {runes}. Results: {burst_results}")
                  return
             
             # Normalize to the consensus value
             runes = most_common
 
             # Re-check change gate after normalization
-            if runes == self.current_runes: pass 
+            if runes == self.session.current_runes: pass 
             else:
                 # --- GAIN/STABILITY VERIFICATION (2-STEP) ---
-                if not hasattr(self, 'gain_verification_candidate'):
-                     self.gain_verification_candidate = -1
-                
                 if runes != self.gain_verification_candidate:
                      # Check for Digit-Shift Spike (e.g., 15k -> 65k)
                      is_suspicious = False
-                     s_curr = str(max(0, self.current_runes))
+                     s_curr = str(max(0, self.session.current_runes))
                      s_new = str(runes)
                      if len(s_curr) == len(s_new) and len(s_new) >= 5:
                          diff_digits = sum(1 for c1, c2 in zip(s_curr, s_new) if c1 != c2)
-                         if diff_digits == 1 and abs(runes - self.current_runes) >= 10000:
+                         if diff_digits == 1 and abs(runes - self.session.current_runes) >= 10000:
                              is_suspicious = True
 
                      # Start tracking the new candidate immediately
-                     old_candidate = self.gain_verification_candidate
                      self.gain_verification_candidate = runes
                      self.spike_persistence = 1 if is_suspicious else 0
-                     
-                     if self.config.get("debug_mode"):
-                          logger.debug(f"Gain Candidate: {runes} (Waiting for confirmation)")
                      return 
 
                 # If same as candidate, check for suspicious persistence
-                if hasattr(self, 'spike_persistence') and self.spike_persistence > 0:
+                if self.spike_persistence > 0:
                      self.spike_persistence += 1
                      if self.spike_persistence < 3: # Require 3 hits for suspicious
-                         if self.config.get("debug_mode"):
-                             logger.info(f"SUSPICIOUS Digit-Shift: {self.current_runes} -> {runes}. Holding for consensus ({self.spike_persistence}/3)")
                          return
 
                 # If we are here, BURST passed AND 2/3-STEP verification passed.
                 self.gain_verification_candidate = -1 
                 self.spike_persistence = 0
                 
-                if self.config.get("debug_mode"):
-                     logger.info(f"Runes Confirmed: {self.current_runes} -> {runes} (Conf: {confidence:.0f}%)")
+                logger.info(f"DEBUG_RUNES: VALIDATED {self.session.current_runes} -> {runes}")
 
                 # --- IGNORE NEXT GAIN (After Level Up) ---
-                if self._ignore_next_rune_gain and runes > self.current_runes:
+                if self._ignore_next_rune_gain and runes > self.session.current_runes:
                     self._ignore_next_rune_gain = False
                     self._ignore_next_rune_gain_grace_period = None
-                    if self.config.get("debug_mode"):
-                        logger.info(f"Ignored post-leveling gain: +{runes - self.current_runes}")
-                    self.current_runes = runes 
+                    self.session.current_runes = runes 
                     self.last_runes_reading = runes
                     return
 
@@ -1317,7 +1450,6 @@ class StateService(IStateService):
                     _, level_cost = self._level_up_pending_sync
                     if abs(diff) >= level_cost * 0.8:
                         self._level_up_pending_sync = None
-                        if self.config.get("debug_mode"): logger.info("Level-Up Guard cleared (Spending detected)")
 
                 # A. SPENDING (Negative diff)
                 if diff < 0:
@@ -1342,11 +1474,7 @@ class StateService(IStateService):
                              # Yes, let's ignore it for now. If it persists for 5s, it will eventually pass.
                              # But `on_runes_detected` updates `current_runes` at the end!
                              # We must BLOCK the update if we suspect it.
-                             pass # Fall through to update? No, we want to reject it from "Current Runes" too?
-                             # If we update current_runes to 7174, the graph will clamp it (Ratchet).
-                             # But the UI will show 7174.
-                             # User didn't complain about UI, only Graph.
-                             # But let's be safe.
+                             
                         
                         spent = abs(diff)
                         self.pending_spending_event = (time.time(), spent, self.last_runes_reading)
@@ -1394,28 +1522,37 @@ class StateService(IStateService):
                     # 2. Absolute Match: Current runes match pending loss (Glitchy OCR or intermediate gains)
                     is_recovery = False
                     if self.lost_runes_pending > 0:
-                        # Delta Match (Standard)
-                        if abs(gain - self.lost_runes_pending) <= 100: # Relaxed tolerance
+                        # Delta Match (Standard) - Strict
+                        if gain == self.lost_runes_pending: 
                             is_recovery = True
                         # Absolute Match (Fallback for "12k glitch -> 34k")
                         # Checks if we are back to within 10% or 2000 runes of the lost amount.
                         # This handles cases where the "Drop" was misread (e.g. reading 12k instead of 0), so the Delta is wrong,
                         # but the "Recovery" restores the full previous amount.
-                        elif abs(runes - self.lost_runes_pending) < max(2000, self.lost_runes_pending * 0.1):
-                             is_recovery = True
-                             if self.config.get("debug_mode"): logger.info(f"Recovery via Absolute Match: {runes} vs {self.lost_runes_pending}")
+                        # Strict Match (User Request: "Strictement egale")
+                        if runes == self.lost_runes_pending:
+                            is_recovery = True
+                            if self.config.get("debug_mode"): logger.info(f"Recovery VALIDATED: {runes} == {self.lost_runes_pending}")
+                        
+                        else:
+                             # No fuzzy match allowed per strict rules
+                             pass
 
                     if is_recovery:
-                        self.recovery_count += 1 
+                        self.session.recovery_count += 1 
                         self.log_session_event("RUNE_RECOVERY", {"recovered": self.lost_runes_pending})
-                        self.graph_events.append({"t": time.time(), "type": "RECOVERY"})
+                        self.session.graph_events.append({"t": time.time(), "type": "RECOVERY"})
+                        if self.config.get("debug_mode"):
+                            logger.info(f"DEBUG_RUNES [ACTION]: RECOVERY DETECTED (+{self.lost_runes_pending})")
                         self.lost_runes_pending = 0 
                         gain = 0 
                     
                     if gain > 0: self.pending_rps_gain += gain
 
                 # COMMIT UPDATES
-                self.current_runes = runes
+                if self.config.get("debug_mode"):
+                    logger.info(f"DEBUG_RUNES [COMMIT]: {self.session.current_runes} -> {runes}")
+                self.session.current_runes = runes
                 self.last_runes_reading = runes
                 self.last_stat_change_time = time.time() 
 
@@ -1433,7 +1570,7 @@ class StateService(IStateService):
              self.last_stable_runes_time = time.time()
 
         # Update display every frame
-        self.schedule(0, lambda: self.update_runes_display(self.current_run_level))
+        self.schedule(0, lambda: self.update_runes_display(self.session.current_run_level))
 
     def _is_digit_shift_drop(self, old_val: int, new_val: int) -> bool:
         """
@@ -1449,7 +1586,7 @@ class StateService(IStateService):
         return False
 
     def update_runes_display(self, level: int):
-        current_runes = getattr(self, 'current_runes', 0)
+        current_runes = getattr(self.session, 'current_runes', 0)
         
         # --- BLINDNESS FILTER (Inventory / Black Screen) ---
         # If OCR sees 0/0, it's likely hidden UI. We hold last valid display values.
@@ -1482,8 +1619,15 @@ class StateService(IStateService):
         missing = max(0, relative_needed - disp_runes)
         
         # Define p_name for Stats
-        if self.current_phase_index >= 0:
-             p_name = self.phases[self.current_phase_index]["name"]
+        # Define p_name for Stats
+        if self.session.phase_index >= 0:
+             p_name = self.phases[self.session.phase_index]["name"]
+             # Shorten for UI
+             if "Shrinking" in p_name: p_name = p_name.replace("Shrinking", "Shrink")
+             if "Preparation" in p_name: p_name = p_name.replace("Preparation", "Prep")
+             
+             if self.config.get("debug_mode"):
+                 logger.debug(f"UI UPDATE: Phase Index {self.session.phase_index} -> Name '{p_name}'")
         else:
              p_name = "WAITING"
 
@@ -1497,21 +1641,24 @@ class StateService(IStateService):
             "needed_runes": relative_needed,
             "missing_runes": missing,
             "is_max_level": disp_lvl >= 15,
-            "run_history": self.run_accumulated_history,
+            "run_history": self.session.run_accumulated_history,
             "run_history_raw": self.run_accumulated_raw,
-            "transitions": self.day_transition_markers,
-            "death_count": self.death_count,
-            "recovery_count": self.recovery_count,
+            "transitions": self.session.day_transition_markers,
+            "death_count": self.session.death_count,
+            "recovery_count": self.session.recovery_count,
             "phase_name": p_name,
             "spent_at_merchants": self.spent_at_merchants,
-            "graph_events": self.graph_events,
+            "graph_events": self.session.graph_events,
             "graph_start_time": getattr(self, "graph_start_time", 0),
             "rps": self.smoothed_rps,
             "grade": self.calculate_efficiency_grade(),
             "time_to_level": self.calculate_time_to_level(missing),
             "delta_runes": self.last_calculated_delta,
-            "nr_config": {
-                "snowball": self.NR_SNOWBALL,
+            "remaining_time": self.NR_TOTAL_TIME - len(self.session.run_accumulated_history), # Assuming run_accumulated_history length is seconds
+            "boss_drops": self.NR_BOSS_DROPS,
+            "snowball_d1": self.NR_SNOWBALL_D1,
+            "snowball_d2": self.NR_SNOWBALL_D2,
+            "nr_config": { # Signal that new config is active
                 "goal": self.NR_FARMING_GOAL,
                 "duration": self.NR_TOTAL_TIME
             }
@@ -1521,46 +1668,51 @@ class StateService(IStateService):
 
     # --- ANALYTICS ENGINE ---
 
+        # Target: Level 14 (~437k) at 28m (Day 2 End).
+        self.NR_IDEAL_TARGET = 437578 # Lvl 1->14 (Exact)
+        self.NR_FARMING_GOAL = 337578 # Farming Goal (437k - 100k Bosses)
+        
+        # ...
+
     def get_ideal_runes_at_time(self, t_seconds: float) -> float:
         """
-        Returns the ideal rune count at time t (Farming Steps).
-        Revised for 14m Phases (840s).
+        Returns the ideal rune count at time t.
+        Target: Level 14 (~437k) at end of Day 2 (NR_TOTAL_TIME).
+        Split Snowball: Day 1=1.35, Day 2=1.15.
         """
+        t_eff = max(0, min(t_seconds, self.NR_TOTAL_TIME))
+        t_day1_end = float(self.NR_DAY_DURATION)
+        farming_goal = 337578
         
-        # Day 1 Duration: ~840s (14 mins)
-        t_day1_end = 840.0
-        
-        if t_seconds < t_day1_end:
-            # Segment 1: Day 1
-            # Expo curve to 180,881 (Level 9.5)
-            ratio = t_seconds / t_day1_end
-            if ratio < 0: ratio = 0
-            base_runes = 180881 * (ratio ** 1.2)
-            return base_runes
+        if t_eff < t_day1_end:
+            # Segment 1: Day 1 (Power 1.35)
+            # Scaling: Proportional to total time, but using D1 power
+            ratio = t_eff / self.NR_TOTAL_TIME
+            return farming_goal * (ratio ** self.NR_SNOWBALL_D1)
+            
         else:
             # Segment 2: Day 2 (After Boss 1)
-            # Baseline: Ideal(Day1_End) + 50,000 (Boss 1 Drop)
-            day1_val = 180881 
-            boss1_drop = 50000
-            start_val = day1_val + boss1_drop # 230,881
+            # Baseline: Value at Day 1 end + Boss 1 (50k)
+            ratio_d1 = t_day1_end / self.NR_TOTAL_TIME
+            val_d1 = farming_goal * (ratio_d1 ** self.NR_SNOWBALL_D1)
             
-            # Target End: Level 14 (~437k) at 28m (1680s)
-            target_val = 437578
+            start_val = val_d1 + 50000 
+            target_val = 437578 # Lvl 14 Total
             
-            t_day2 = t_seconds - t_day1_end
-            t_day2_duration = 840.0 # 14 mins for Day 2
+            # Time in D2
+            t_d2 = t_eff - t_day1_end
+            t_d2_duration = self.NR_TOTAL_TIME - t_day1_end
             
-            ratio = t_day2 / t_day2_duration
-            if ratio > 1.0: ratio = 1.0
+            ratio_d2 = t_d2 / t_d2_duration if t_d2_duration > 0 else 1.0
             
-            # Growth from start to target
-            growth_needed = target_val - start_val
-            current_growth = growth_needed * (ratio ** 1.2)
+            # Growth needed in Day 2 to reach Target
+            rem_farming = target_val - start_val
+            current_growth = rem_farming * (ratio_d2 ** self.NR_SNOWBALL_D2)
             
             return start_val + current_growth
 
     def calculate_efficiency_grade(self) -> str:
-        if self.start_time is None: 
+        if self.session.start_time is None: 
             self.last_calculated_delta = 0
             return "C"
 
@@ -1571,7 +1723,7 @@ class StateService(IStateService):
         # Actually StateService doesn't track "paused duration" well globally yet.
         # But we pause graph updates during boss. Can we use len(run_history) as seconds?
         # Yes, run_history is approx seconds of active farming.
-        farming_time = len(self.run_accumulated_history)
+        farming_time = len(self.session.run_accumulated_history)
         if farming_time < 30: return "A" # Start buffer
         
         current_total = self.last_valid_total_runes
@@ -1606,55 +1758,24 @@ class StateService(IStateService):
         return f"{mins}m {secs}s"
 
     def get_transition_penalty(self, target_day: str) -> int:
-        """Sequence Guard: Apply penalties to unlikely state transitions."""
-        # Phase mappings:
-        # Day 1: 0-4 (Boss 1 is index 4)
-        # Day 2: 5-9 (Boss 2 is index 9)
-        # Day 3: 10-11
-        
-        now = time.time()
-        
-        # 1. Reverse Transitions (Always Penalty)
-        if target_day == "DAY 1":
-            if self.current_phase_index >= 5:
-                return -35
-            
-            # --- STRICT RUNE LOCKOUT ---
-            # If we already have runes (past the very initial drop), block auto-reset.
-            # We use 20 as a safe threshold for OCR jitter.
-            if self.current_runes > 20:
-                if self.config.get("debug_mode"):
-                    logger.debug(f"Reset Lockout: Runes detected ({self.current_runes}). Large penalty applied.")
-                return -100
-                
-            # --- FINAL BOSS LOCKOUT ---
-            if self.current_phase_index >= 11:
-                return -120
-        
-        if target_day == "DAY 2" and self.current_phase_index >= 10:
-            return -35
-            
-        # 2. Skips (Always Penalty)
-        if target_day == "DAY 3" and self.current_phase_index < 5:
-            return -40
-            
-        # 3. Premature Forward Transitions (NEW)
-        # Day 1 -> Day 2: Should only happen after Boss 1 (Phase 4) or if enough time has passed
-        if target_day == "DAY 2" and self.current_phase_index < 4:
-            # We enforce a 12 min (720s) minimum for Day 1 -> Day 2 OCR trigger if not in Boss phase
-            if elapsed_in_run < 720:
-                return -100 # Extreme penalty to block OCR misreads
-            else:
-                return -30 # Soft penalty even if late, Boss 1 detection is preferred
-                
-        # Day 2 -> Day 3: Should only happen after Boss 2 (Phase 9)
-        if target_day == "DAY 3" and 4 < self.current_phase_index < 9:
-            return -100 # Extreme penalty to block OCR misreads
-            
-        return 0
+        """Sequence Guard: Apply penalties to unlikely state transitions (Delegated to GameRules)."""
+        elapsed_in_run = len(self.session.run_accumulated_history)
 
-    def handle_trigger(self, trigger_text: str, is_manual: bool = False) -> bool:
-        if not self.is_transition_allowed(trigger_text, is_manual=is_manual):
+        current_runes = getattr(self.session, 'current_runes', 0)
+        debug_mode = self.config.get("debug_mode", False)
+
+        return GameRules.get_transition_penalty(
+            target_day=target_day,
+            current_phase_index=self.session.phase_index,
+            current_runes=current_runes,
+            elapsed_in_run=elapsed_in_run,
+            debug_mode=debug_mode
+        )
+
+    def handle_trigger(self, trigger_text: str, is_manual: bool = False, force: bool = False) -> bool:
+        print(f"DEBUG_TRACE: handle_trigger({trigger_text}, is_manual={is_manual}, force={force})")
+        if not force and not self.is_transition_allowed(trigger_text, is_manual=is_manual):
+            print(f"DEBUG_TRACE: Transition BLOCKED by Rules (Force={force})")
             return False
 
         if self.current_session_id == -1:
@@ -1677,74 +1798,25 @@ class StateService(IStateService):
         
     def is_transition_allowed(self, target_day: str, is_manual: bool = False) -> bool:
         """
-        STRICT STATE MACHINE (User Request) - WITH OCR/MANUAL OVERRIDE:
-        - Day 1: Only if Reset/Startup. blocked if deep in run (Level > 5 or Runes > 100).
-        - Day 2: Preferred if Phase is Boss 1 (Index 4), BUT also allowed if:
-            * OCR detects "JOUR II" (is_manual=False from OCR)
-            * User manually triggers via hotkey (is_manual=True)
-        - Day 3: Preferred if Phase is Boss 2 (Index 9), BUT also allowed if:
-            * OCR detects "JOUR III" 
-            * User manually triggers via hotkey
+        STRICT STATE MACHINE (Delegated to GameRules).
         """
-        if target_day == "DAY 1":
-            # Guard: OCR triggers for Day 1 must follow a black screen (within 15s)
-            # Exception: Manual Trigger
-            if not is_manual:
-                last_black = getattr(self, 'last_black_screen_end', 0)
-                if time.time() - last_black > 15.0:
-                    if self.config.get("debug_mode"):
-                        logger.debug(f"BLOCKED Transition to DAY 1: No recent black screen (Last: {last_black}).")
-                    return False
+        elapsed_in_run = len(self.session.run_accumulated_history)
 
-            # Block accidental Day 1 resets if we are seemingly deep in a run
-            # Exception: Manual Trigger or Startup
-            if self.current_run_level > 5 or getattr(self, 'current_runes', 0) > 200:
-                logger.warning(f"BLOCKED Transition to DAY 1: Level {self.current_run_level} > 5 or Runes {self.current_runes} > 200.")
-                return False
-            return True
-            
-        elif target_day == "DAY 2":
-            # IDEAL: Must be in Boss 1 Phase (Index 4)
-            if self.current_phase_index == 4: # Boss 1
-                 return True
-            
-            # FALLBACK: Allow if OCR detected "JOUR II" or manual hotkey
-            # This handles cases where phase progression is out of sync
-            if is_manual:
-                logger.info(f"DAY 2 Transition ALLOWED (Manual Override): Phase {self.current_phase_index}")
-                return True
-            
-            # If not manual, check if we're at least past the early game
-            # (e.g., level > 5 or time > 10 minutes)
-            elapsed_time = len(self.run_accumulated_history) if hasattr(self, 'run_accumulated_history') else 0
-            if self.current_run_level >= 5 or elapsed_time > 600:
-                logger.info(f"DAY 2 Transition ALLOWED (OCR Detection + Progress Check): Level {self.current_run_level}, Time {elapsed_time}s")
-                return True
-            
-            logger.warning(f"BLOCKED Transition to DAY 2: Phase {self.current_phase_index} != Boss 1 (4), Level {self.current_run_level} < 5, Time {elapsed_time}s < 600s")
-            return False
+        current_runes = getattr(self.session, 'current_runes', 0)
+        last_black_screen = getattr(self, 'last_black_screen_end', 0)
+        debug_mode = self.config.get("debug_mode", False)
 
-        elif target_day == "DAY 3":
-            # IDEAL: Must be in Boss 2 Phase (Index 9)
-            if self.current_phase_index == 9: # Boss 2
-                 return True
-            
-            # FALLBACK: Allow if manual hotkey
-            if is_manual:
-                logger.info(f"DAY 3 Transition ALLOWED (Manual Override): Phase {self.current_phase_index}")
-                return True
-            
-            # If not manual (OCR detected), check if we're at least in Day 2 or later
-            # and have progressed significantly (level > 10 or time > 20 minutes)
-            elapsed_time = len(self.run_accumulated_history) if hasattr(self, 'run_accumulated_history') else 0
-            if self.current_phase_index >= 5 or self.current_run_level >= 10 or elapsed_time > 1200:
-                logger.info(f"DAY 3 Transition ALLOWED (OCR Detection + Progress Check): Phase {self.current_phase_index}, Level {self.current_run_level}, Time {elapsed_time}s")
-                return True
-                
-            logger.warning(f"BLOCKED Transition to DAY 3: Phase {self.current_phase_index} != Boss 2 (9), Level {self.current_run_level} < 10, Time {elapsed_time}s < 1200s")
-            return False
-             
-        return False
+        return GameRules.is_transition_allowed(
+            target_day=target_day,
+            current_phase_index=self.session.phase_index,
+            current_run_level=self.session.current_run_level,
+            current_runes=current_runes,
+            elapsed_in_run=elapsed_in_run,
+            last_black_screen_time=last_black_screen,
+            is_manual=is_manual,
+            debug_mode=debug_mode,
+            is_startup=getattr(self, 'waiting_for_day1', False)
+        )
 
     def set_phase_by_name_start(self, name_start_str):
         # Logique simplifiée pour mapper Day 1 -> Phase 0, Day 2 -> Phase 5 etc.
@@ -1759,19 +1831,32 @@ class StateService(IStateService):
                 self.trigger_day_3()
 
     def Trigger(self, index):
-        self.timer_frozen = False
-        self.current_phase_index = index
-        self.start_time = time.time()
+        print(f"DEBUG_TRACE: Trigger({index}) Called")
+        self.session.timer_frozen = False
+        self.session.phase_index = index
+        self.session.start_time = time.time()
         self.last_phase_change_time = time.time() # Added to track delay
+        self._update_day_ocr_state()
         self._check_rps_pause()
+        
+        # --- LOG CONTEXT UPDATE ---
+        phase_name = self.phases[index]["name"] if index >= 0 else "Waiting"
+        logger.update_context("phase", phase_name)
+        logger.info(f"Phase Triggered: {phase_name} (Index: {index})")
+        
+        # Event Bus
+        bus.publish(PhaseChangeEvent(index, phase_name, manual=False))
         
         # Start of Run clears Menu State
         if index != -1:
             self.is_in_menu = False
+        
+        # Force UI Update to show new phase name immediately
+        self.schedule(0, lambda: self.update_runes_display(self.session.current_run_level))
 
     def _check_rps_pause(self):
-        if self.current_phase_index < 0: return
-        phase_name = self.phases[self.current_phase_index]["name"]
+        if self.session.phase_index < 0: return
+        phase_name = self.phases[self.session.phase_index]["name"]
         # Boss 1, Boss 2, Day 3 - Final Boss
         if "Boss" in phase_name:
             self.rps_paused = True
@@ -1787,22 +1872,28 @@ class StateService(IStateService):
              self.db.log_event(self.current_session_id, "PHASE_CHANGE", phase_name)
 
     def trigger_day_1(self) -> bool:
+        # NASA-grade Early Game Detection: JOUR I marks end of initialization
+        if self.waiting_for_day1:
+            logger.info("✅ JOUR I detected - Initialization complete. Unfreezing stats.")
+            self.waiting_for_day1 = False
+            self.session.stats_frozen = False
+        
         # "JOUR I" detection implies a reset. We aggressively clear all state.
-        self.timer_frozen = True  # Just freeze, don't announce
+        self.session.timer_frozen = True  # Just freeze, don't announce
         self.start_new_session("Storm")
         
         # --- AGGRESSIVE RESET (Anti-Death/Anti-Leak) ---
-        self.current_run_level = 1
-        self.current_runes = 0
+        self.session.current_run_level = 1
+        self.session.current_runes = 0
         self.last_runes_reading = 0
         self.last_valid_total_runes = 0
         self.last_display_level = 1
         self.last_display_runes = 0
         
         # Reset Timer & Global State
-        self.start_time = time.time()
-        self.boss3_start_time = None
-        self.day1_detection_time = time.time()
+        self.session.start_time = time.time()
+        self.session.boss3_start_time = None
+        self.session.day1_detection_time = time.time()
         
         # Reset RPS & Smoothing
         self.rune_gains_history = deque([0] * 40, maxlen=40)
@@ -1811,18 +1902,18 @@ class StateService(IStateService):
         self.rps_paused = False
         
         # Reset Graphics & Markers
-        self.run_accumulated_history = []
+        self.session.run_accumulated_history = []
         self.run_accumulated_raw = []
-        self.graph_events = []
+        self.session.graph_events = []
         self.graph_log_data = []
         self.graph_start_time = time.time() 
-        self.day_transition_markers = []
+        self.session.day_transition_markers = []
         self.last_calculated_delta = 0
         
         # Reset Statistics
         self.permanent_loss = 0
-        self.death_count = 0
-        self.recovery_count = 0
+        self.session.death_count = 0
+        self.session.recovery_count = 0
         self.total_death_loss = 0
         self.lost_runes_pending = 0
         self.spent_at_merchants = 0 
@@ -1844,7 +1935,7 @@ class StateService(IStateService):
         self.last_silent_level_drop = None
         self.runes_uncertain = False
         
-        if not self.day1_detection_time: self.day1_detection_time = time.time()
+        if not self.session.day1_detection_time: self.session.day1_detection_time = time.time()
         self.victory_detected = False # Reset for new run
         self.victory_check_active = False
         self.last_stat_change_time = time.time()
@@ -1860,58 +1951,62 @@ class StateService(IStateService):
         self.schedule(0, lambda: self.update_runes_display(1))
         
         # Record marker for graph
-        marker_idx = len(self.run_accumulated_history)
-        self.day_transition_markers.append((marker_idx, "DAY 1"))
+        marker_idx = len(self.session.run_accumulated_history)
+        self.session.day_transition_markers.append((marker_idx, "DAY 1"))
         return True
 
     def trigger_day_2(self):
-        if self.current_phase_index != 5:
+        if self.session.phase_index != 5:
             self.Trigger(5)
             # Record marker for graph
-            marker_idx = len(self.run_accumulated_history)
-            self.day_transition_markers.append((marker_idx, "DAY 2"))
+            marker_idx = len(self.session.run_accumulated_history)
+            self.session.day_transition_markers.append((marker_idx, "DAY 2"))
 
     def trigger_day_3(self):
-        if self.current_phase_index < 10:
+        if self.session.phase_index != 10:
             self.Trigger(10)
             # Record marker for graph
-            marker_idx = len(self.run_accumulated_history)
-            self.day_transition_markers.append((marker_idx, "DAY 3"))
-            self.boss3_start_time = time.time()
+            marker_idx = len(self.session.run_accumulated_history)
+            self.session.day_transition_markers.append((marker_idx, "DAY 3"))
+            self.session.boss3_start_time = time.time()
 
     def trigger_final_boss(self):
-        if self.current_phase_index != 11:
+        if self.session.phase_index != 11:
             self.Trigger(11)
             # The instruction moved boss3_start_time to trigger_day_3, so this line is removed.
-            # self.boss3_start_time = time.time() 
+            # self.session.boss3_start_time = time.time() 
 
     def skip_to_boss(self):
         """Skip to the boss of the current day for testing."""
-        logger.info(f"Manual skip requested. Current phase: {self.current_phase_index}")
-        if self.current_phase_index < 4:
+        logger.info(f"Manual skip requested. Current phase: {self.session.phase_index}")
+        if self.session.phase_index < 4:
             msg = "SKIP: Skipping to Boss 1"
             logger.info(msg)
             self.vision.log_debug(msg)
             self.Trigger(4)
-        elif self.current_phase_index < 9:
+        elif self.session.phase_index < 9:
             msg = "SKIP: Skipping to Boss 2"
             logger.info(msg)
             self.vision.log_debug(msg)
             self.Trigger(9)
-        elif self.current_phase_index == 9:
-            msg = "SKIP: Skipping to Day 3 Preparation"
+        elif self.session.phase_index == 9:
+            msg = "SKIP: Boss 2 -> Day 3 Preparation"
             logger.info(msg)
             self.vision.log_debug(msg)
             self.trigger_day_3()
-        else:
-            msg = "SKIP: Skipping to Final Boss"
+        elif self.session.phase_index == 10:
+            msg = "SKIP: Day 3 Preparation -> Final Boss"
             logger.info(msg)
             self.vision.log_debug(msg)
             self.trigger_final_boss()
+        else:
+            msg = "SKIP: Already at Final Boss"
+            logger.info(msg)
+            self.vision.log_debug(msg)
 
     def get_current_state(self) -> str:
-        if self.current_phase_index == -1: return "Waiting"
-        return self.phases[self.current_phase_index]["name"]
+        if self.session.phase_index == -1: return "Waiting"
+        return self.phases[self.session.phase_index]["name"]
 
     # --- Timer Loop ---
 
@@ -1922,7 +2017,7 @@ class StateService(IStateService):
     # --- Victory ---
     def check_victory_loop(self):
         if not self.running: return
-        if self.current_phase_index != 11:
+        if self.session.phase_index != 11:
             self.victory_check_active = False
             return 
             
@@ -1945,20 +2040,21 @@ class StateService(IStateService):
 
              self.victory_check_active = False
              self.victory_detected = True # Lock victory state until next run
+             self._update_day_ocr_state() 
         else:
              self.schedule(int(self.victory_check_interval * 1000), self.check_victory_loop)
 
     def stop_timer_victory(self):
-        self.timer_frozen = True
+        self.session.timer_frozen = True
         
         total_time = 0
         boss3_time = 0
         now = time.time()
         
-        if self.day1_detection_time: total_time = now - self.day1_detection_time
-        elif self.start_time: total_time = now - self.start_time # Approximation
+        if self.session.day1_detection_time: total_time = now - self.session.day1_detection_time
+        elif self.session.start_time: total_time = now - self.session.start_time # Approximation
         
-        if self.boss3_start_time: boss3_time = now - self.boss3_start_time
+        if self.session.boss3_start_time: boss3_time = now - self.session.boss3_start_time
         
         fmt = lambda s: f"{int(s//60):02}:{int(s%60):02}"
         final_text = f"{fmt(total_time)}"
@@ -1967,14 +2063,16 @@ class StateService(IStateService):
         self.audio.announce("Victoire !")
 
     # --- Manual Feedback ---
-    def handle_manual_feedback(self, correct_target: str):
-        logger.info(f"Manual Feedback requested: {correct_target}")
+    def handle_manual_feedback(self, correct_target: str, force: bool = False):
+        print(f"DEBUG_TRACE: handle_manual_feedback({correct_target}, force={force})")
+        logger.info(f"Manual Feedback requested: {correct_target} (Force={force})")
         
         # Guard: Prevent accidental Day 2 trigger if too early in Day 1 run
-        if correct_target == "DAY 2":
-            elapsed_in_run = len(self.run_accumulated_history)
+        # BYPASSED if force=True (Expert Shortcut)
+        if not force and correct_target == "DAY 2":
+            elapsed_in_run = len(self.session.run_accumulated_history)
             # If less than 8 minutes (480s) have passed, we ignore the hotkey unless in Boss 1
-            if self.current_phase_index < 4 and elapsed_in_run < 480:
+            if self.session.phase_index < 4 and elapsed_in_run < 480:
                 logger.warning(f"Manual DAY 2 ignored: Run too short ({elapsed_in_run}s < 480s) and not in Boss phase.")
                 try: winsound.Beep(300, 200) # Low error beep
                 except: pass
@@ -1982,9 +2080,10 @@ class StateService(IStateService):
 
         if not self.triggered_recently:
             logger.info(f"Manual Feedback Applied: {correct_target}")
-            self.handle_trigger(correct_target, is_manual=True)  # Pass is_manual=True
+            self.handle_trigger(correct_target, is_manual=True, force=force)  # Pass force=True
             self.triggered_recently = True
-            self.schedule(5000, lambda: setattr(self, 'triggered_recently', False))
+            # Reduce timeout to 1s to allow rapid correction if needed
+            self.schedule(1000, lambda: setattr(self, 'triggered_recently', False))
             
             # Save a sample to help debug what was happening
             if self.config.get("save_raw_samples", True) or self.config.get("debug_mode", False):
@@ -1994,8 +2093,9 @@ class StateService(IStateService):
 
     def handle_false_positive(self):
         logger.info("Manual Feedback: False Positive")
-        self.timer_frozen = False
-        self.current_phase_index = -1
+        self.session.timer_frozen = False
+        self.session.phase_index = -1
+        self._update_day_ocr_state()
         self.triggered_recently = False # Allow immediate re-trigger if needed
         
         # If it was a false positive start, maybe we should delete the session?
@@ -2044,18 +2144,24 @@ class StateService(IStateService):
         if hasattr(self.vision, "get_debug_state"):
             vision_state = self.vision.get_debug_state()
             
-        phase_name = "Unknown"
-        if 0 <= self.current_phase_index < len(self.phases):
-            phase_name = self.phases[self.current_phase_index]["name"]
-            
+        p_name = "Unknown"
+        if 0 <= self.session.phase_index < len(self.phases):
+            p_name = self.phases[self.session.phase_index]["name"] if self.session.phase_index >= 0 else "Waiting"
+        # Shorten for UI
+        if "Shrinking" in p_name: p_name = p_name.replace("Shrinking", "Shrink")
+        if "Preparation" in p_name: p_name = p_name.replace("Preparation", "Prep")
+        
+        if self.config.get("debug_mode"):
+             logger.debug(f"UI UPDATE: Phase Index {self.session.phase_index} -> Name '{p_name}'")
+        
         return {
-            "phase": phase_name,
-            "phase_index": self.current_phase_index,
+            "phase": p_name,
+            "phase_index": self.session.phase_index,
             "session_count": self.session_count,
-            "runes": self.current_runes,
-            "level": self.current_run_level,
+            "runes": self.session.current_runes,
+            "level": self.session.current_run_level,
             "spent_merchants": self.spent_at_merchants,
-            "death_count": self.death_count,
+            "death_count": self.session.death_count,
             "pending_loss": self.lost_runes_pending,
             "permanent_loss": self.permanent_loss,
             "black_screen": {
@@ -2085,12 +2191,12 @@ class StateService(IStateService):
         # death_runes passed in is 'self.last_runes_reading' aka the amount BEFORE the drop to 0.
         total_loss = death_runes + lost_level_cost
         
-        self.death_count += 1
+        self.session.death_count += 1
         self.total_death_loss += total_loss
         self.lost_runes_pending = total_loss
         
         death_event = {
-                "death_num": self.death_count,
+                "death_num": self.session.death_count,
                 "old_level": old_level,
                 "new_level": level,
                 "runes_at_death": death_runes,
@@ -2100,7 +2206,7 @@ class StateService(IStateService):
             }
         self.death_history.append(death_event)
         self.log_session_event("DEATH", death_event)
-        self.graph_events.append({"t": time.time(), "type": "DEATH"})
+        self.session.graph_events.append({"t": time.time(), "type": "DEATH"})
         
         # 3. Graph Repair (Similar to standard death)
         # We need to subtract the loss from 'last_valid_total_runes' 
@@ -2111,5 +2217,46 @@ class StateService(IStateService):
         
         # We must ignore the next rune drop? No, we just processed it.
         self._ignore_next_rune_drop = True 
+
+    # --- EVENT BUS HANDLERS ---
+    def _handle_level_event(self, event: LevelDetectedEvent):
+        self.on_level_detected(event.level, event.confidence)
+
+    def _handle_runes_event(self, event: RunesDetectedEvent):
+        self.on_runes_detected(event.runes, event.confidence)
+
+    def _handle_menu_event(self, event: MenuDetectedEvent):
+        self.on_menu_screen_detected(event.is_open)
+
+    def on_menu_screen_detected(self, is_visible: bool):
+        """
+        Handles transition triggered by Menu Screen detection.
+        Logic:
+        - If Visible: State matches "MENU".
+        - If Disappears (Exit Menu): Reset Session to "GAME INIT" (00:00).
+          This prepares for the new run.
+        """
+        if is_visible:
+            # User is in Menu
+            if self.current_phase != "MENU":
+                logger.info("Menu Detected -> Pausing Run Logic")
+                self.current_phase = "MENU"
+                self.overlay.update_phase("MENU", "00:00")
+                
+        else:
+            # Menu just disappeared -> Starting Game or Loading?
+            # User request: "dès qu'elle n'est plus là on remet le chrono à 00:00 et on indique ‘game init’"
+            if self.current_phase == "MENU":
+                logger.info("Menu Exited -> Resetting to GAME INIT")
+                self.initialize(self.overlay) # Full Reset? Or just phase?
+                # Initialize resets everything, which is what we want for "Game Init"
+                self.current_phase = "GAME INIT"
+                self.overlay.update_phase("GAME INIT", "00:00")
+                # Ensure session count doesn't increment prematurely, 
+                # but initialize() resets it? No, initialize is hard reset.
+                # Maybe just soft reset?
+                self.start_new_session("GAME INIT")
+                self.session_start_time = 0 # Hold at 0 until Day 1 triggers
+                self.session_active = False # Wait for Day 1 msg
 
 

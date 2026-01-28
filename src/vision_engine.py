@@ -63,6 +63,8 @@ class VisionEngine:
         self.region_override = None
         self.secondary_running = False
         
+        self.debug_callback = None # New Debug Callback
+        
         # Debug / Inspector State
         self.last_ocr_text = ""
         self.last_ocr_conf = 0.0
@@ -94,6 +96,29 @@ class VisionEngine:
         os.makedirs(self.raw_samples_dir, exist_ok=True)
         self.last_raw_save_time = 0
         self.frame_count = 0
+        
+        # Adjustable OCR Parameters (Tuner)
+        # Adjustable OCR Parameters (Tuner)
+        # Split into Runes / Level
+        # Load from config or use defaults
+        default_params = {
+            "Runes": { "scale": 1.0, "gamma": 1.9, "thresh": 255, "dilate": 0, "psm": 7, "mode": "Digits", "padding": 20 },
+            "Level": { "scale": 4.0, "gamma": 0.6, "thresh": 160, "dilate": 1, "psm": 7, "mode": "Digits", "padding": 20 }
+        }
+        self.ocr_params = self.config.get("ocr_params", default_params)
+        
+        # Whitelist mapping
+        self.ocr_whitelists = {
+            "Digits": "0123456789",
+            "Alphanumeric": "", # Empty = everything
+            "Uppercase": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "Custom": "0123456789JOUR I,"
+        }
+
+        # Ensure deep merge / structure integrity if config is partial
+        for key in default_params:
+            if key not in self.ocr_params:
+                self.ocr_params[key] = default_params[key]
 
         # Precompile regex for cleaning text
         self.re_start = re.compile(r'[A-Z0-9].*[A-Z0-9]')
@@ -139,6 +164,10 @@ class VisionEngine:
         # High Performance Tesseract API (DLL)
         self.tess_api_main = None      # For Day Detection (A-Z, 0-9)
         self.tess_api_secondary = None # For Stats (0-9 ONLY) - Very Fast
+        
+        # Configure pytesseract path for fallback/numeric modes
+        pytesseract.pytesseract.tesseract_cmd = config.get("tesseract_cmd", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+        
         self._init_tess_api()
 
         # Define OCR passes configuration
@@ -186,6 +215,8 @@ class VisionEngine:
         self.menu_template = None
         self.char_callback = None # Keep callback name generic or rename? Renaming to menu_callback for consistency.
         self._load_menu_template()
+        self.day_ocr_enabled = True
+        self.last_day_ocr_status = True # For logging
 
     def _load_menu_template(self):
         try:
@@ -208,7 +239,7 @@ class VisionEngine:
 
     def _load_icon_template(self):
         try:
-            template_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "rune_icon_template.png")
+            template_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "templates", "rune_icon_template.png")
             if os.path.exists(template_path):
                 self.icon_template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
                 if self.config.get("debug_mode"):
@@ -233,18 +264,35 @@ class VisionEngine:
 
         # Extract Region
         mon = self.config.get("monitor_region", {})
-        left = reg.get("left", 0) - mon.get("left", 0)
-        top = reg.get("top", 0) - mon.get("top", 0)
+        left = reg.get("left", 0)
+        top = reg.get("top", 0)
         w = reg.get("width", 50)
         h = reg.get("height", 50)
         
-        if img_bgr is None: return False, 0.0
+        # Calculate relative coordinates
+        rel_x = left - mon.get("left", 0)
+        rel_y = top - mon.get("top", 0)
         
-        fh, fw = img_bgr.shape[:2]
-        if left < 0 or top < 0 or (left+w) > fw or (top+h) > fh:
-            return False, 0.0
-            
-        roi = img_bgr[top:top+h, left:left+w]
+        roi = None
+        
+        # Unified Capture Logic (Fast path)
+        if img_bgr is not None:
+            fh, fw = img_bgr.shape[:2]
+            if rel_x >= 0 and rel_y >= 0 and (rel_x + w) <= fw and (rel_y + h) <= fh:
+                 roi = img_bgr[rel_y:rel_y+h, rel_x:rel_x+w]
+        
+        # Fallback Capture Logic (If outside monitor region or img_bgr is None)
+        if roi is None:
+            try:
+                monitor = {"top": top, "left": left, "width": w, "height": h}
+                sct_img = self.sct.grab(monitor)
+                roi = cv2.cvtColor(np.array(sct_img), cv2.COLOR_BGRA2BGR)
+            except Exception as e:
+                # if self.config.get("debug_mode"): logger.debug(f"Icon Fallback Capture failed: {e}")
+                return False, 0.0
+
+        if roi is None: return False, 0.0
+        
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         
         # Match
@@ -307,11 +355,10 @@ class VisionEngine:
                 # Using 'eng' instead of 'fra' because we don't need accents and 
                 # we want to avoid French dictionary bias (confusing II for IL/le).
                 self.tess_pool_main = [
-                    TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=7, variables=tess_vars),
-                    TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=7, variables=tess_vars),
-                    TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=7, variables=tess_vars)
-                ]
-                # self.tess_pool_main = []
+                    TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=6, variables=tess_vars),
+                    TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=6, variables=tess_vars),
+                    TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_main, psm=6, variables=tess_vars)
+                ]                # self.tess_pool_main = []
                 # Keep reference for legacy code
                 if self.tess_pool_main:
                     self.tess_api_main = self.tess_pool_main[0]
@@ -319,8 +366,9 @@ class VisionEngine:
                     self.tess_api_main = None
                 
                 # 2. Secondary Engine: Stats (Digits ONLY)
-                allowlist_stats = "0123456789"
-                self.tess_api_secondary = TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_stats, psm=7)
+                # STRICT Allowlist to prevent "II" or "|" errors. Digits 0-9 only.
+                allowlist_diag = "0123456789"
+                self.tess_api_secondary = TesseractAPI(dll_path, tessdata_path, lang="eng", allowlist=allowlist_diag, psm=6)
                 # self.tess_api_secondary = None
                 
                 if self.config.get("debug_mode"):
@@ -352,6 +400,7 @@ class VisionEngine:
         
     def set_menu_callback(self, callback):
         self.menu_callback = callback
+        self.debug_image_callback = None
 
 
     def update_config(self, new_config):
@@ -387,7 +436,27 @@ class VisionEngine:
             print(f"Vision Engine: Failed to get monitors: {e}")
             return []
 
-    def update_from_config(self) -> None:
+    def set_debug_callback(self, callback):
+        """Sets the callback for real-time debug UI updates."""
+        self.debug_callback = callback
+        
+    def set_debug_image_callback(self, callback):
+        """Sets the callback for real-time binary image preview."""
+        self.debug_image_callback = callback
+        
+    def set_ocr_param(self, category: str, key: str, value: float):
+        """Updates internal OCR parameters dynamically for a specific category."""
+        if category in self.ocr_params and key in self.ocr_params[category]:
+            # Type safety
+            if key in ["thresh", "dilate", "padding"]:
+                self.ocr_params[category][key] = int(value)
+            else:
+                self.ocr_params[category][key] = float(value)
+            
+            if self.debug_mode:
+                print(f"VISION TUNER ({category}): Set {key} = {self.ocr_params[category][key]}")
+
+    def update_from_config(self):
         """Refreshes parameters that can be changed at runtime."""
         self.debug_mode = self.config.get("debug_mode", False)
         
@@ -536,6 +605,11 @@ class VisionEngine:
     def resume(self):
         self.paused = False
         print("Vision Engine: Resumed")
+        
+    def set_day_ocr_enabled(self, enabled: bool):
+        self.day_ocr_enabled = enabled
+        if self.debug_mode:
+            logger.info(f"Vision Engine: Day OCR {'ENABLED' if enabled else 'DISABLED'}")
         
     def capture_screen(self) -> np.ndarray:
         """Captures the current region using BetterCam."""
@@ -726,30 +800,99 @@ class VisionEngine:
 
             if img is None: return
 
-            # Preprocess (Gamma 0.6 -> Otsu -> Scale 2.0)
-            scale = 2.0
-            # Use INTER_LINEAR for speed (Phase 1/2 overlap)
-            img_resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+            # Preprocess (Gamma 0.6 -> Grayscale -> Scale 4.0)
+            # Use Dynamic Parameters based on Process Name (Runes vs Level)
+            params = self.ocr_params.get(process_name, self.ocr_params["Level"])
+            
+            scale = params.get("scale", 4.0)
+            gamma = params.get("gamma", 0.6)
+            thresh_val = params.get("thresh", 160)
+            dilate_iter = params.get("dilate", 1)
+            padding = params.get("padding", 20)
+
+            img_resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
             gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
             
             # Use optimized Gamma LUT
-            gray = self.adjust_gamma(gray, gamma=0.6)
+            gray = self.adjust_gamma(gray, gamma=gamma)
             
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            # Fixed 160 threshold for clean black-on-white text
+            _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY_INV)
             
+            # Simple fallback to OTSU ONLY if the image is mostly empty/white
+            if np.mean(thresh) > 252:
+                 _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            
+            # --- MORPHOLOGICAL EROSION (Thicken Text) ---
+            if dilate_iter > 0:
+                kernel = np.ones((2,2), np.uint8)
+                thresh = cv2.dilate(thresh, kernel, iterations=dilate_iter)
+
+            # Padding is essential for single digit recognition
+
+            # Padding is essential for single digit recognition
+            if padding > 0:
+                thresh = cv2.copyMakeBorder(thresh, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=255) # White padding for Black-on-White text
+            
+            # Ensure contiguous for C API
+            thresh = np.ascontiguousarray(thresh)
+            
+            text = ""
+            conf = 0.0
+            
+            # --- DEBUG IMAGE CALLBACK (Moved after OCR to get Confidence) ---
+            # We need to run OCR first.
+
             if self.tess_api_secondary:
-                # Use Stats Instance
+                # Apply Dynamic Parameters (PSM, Mode)
+                psm = params.get("psm", 7)
+                mode_name = params.get("mode", "Digits")
+                whitelist = self.ocr_whitelists.get(mode_name, "")
+                
+                # Update Tesseract Variables dynamically
+                self.tess_api_secondary.lib.TessBaseAPISetVariable(self.tess_api_secondary.handle, b"tessedit_pageseg_mode", str(psm).encode('utf-8'))
+                self.tess_api_secondary.lib.TessBaseAPISetVariable(self.tess_api_secondary.handle, b"tessedit_char_whitelist", whitelist.encode('utf-8'))
+
+                # Use High-Performance DLL Instance
                 text, conf = self.tess_api_secondary.get_text(thresh)
                 
+                if self.debug_image_callback:
+                    self.debug_image_callback(process_name, thresh, conf)
+                
+                if process_name == "Level" and self.config.get("debug_mode"):
+                    current_sec = int(time.time())
+                    if current_sec % 2 == 0:  # Every 2 seconds
+                        logger.info(f"DLL OCR RAW ({process_name}): text='{text}' Conf: {conf}")
+                        debug_path = os.path.join(self.project_root, f"debug_{process_name.lower()}_dll.png")
+                        cv2.imwrite(debug_path, thresh)
+
                 if text:
+                    # Translation for common Elden Ring font misreadings (digits)
+                    # Note: With Allowlist "0123456789", letters like 'I', 'l', '|' won't appear,
+                    # but maybe mapped to '1' or dropped. 
+                    # We keep replacements just in case some slip through or allowlist isn't perfect partial match.
+                    text = text.replace('|', '1').replace('I', '1').replace('l', '1').replace('[', '1').replace(']', '1').replace('!', '1')
+                    
                     # Log RAW text seen if debug mode + sparse logging
                     if self.config.get("debug_mode") and self.frame_count % 60 == 0:
                          logger.info(f"OCR RAW ({process_name}): '{text}' Conf: {conf}")
 
-                if text and text.isdigit():
-                    val = int(text)
+                # --- UNIFIED DEBUG CALLBACK (Post-Clean) ---
+                if self.debug_callback:
+                    # Provide the text EXACTLY as we logic sees it
+                    self.debug_callback(process_name, text, conf)
+
+                # Extract first numeric sequence
+                numeric_match = re.search(r'\d+', text)
+                if numeric_match:
+                    val = int(numeric_match.group())
                     if callback:
                         callback(val, conf) # Pass Confidence!
+                else:
+                    if process_name == "Level" and self.config.get("debug_mode"):
+                        current_sec = int(time.time())
+                        if current_sec % 2 == 0:
+                            logger.info(f"Level DLL OCR FAILED: text='{text}'")
             else:
                 # Fallback removed
                 pass
@@ -902,7 +1045,30 @@ class VisionEngine:
             
         return results
 
-    def _ocr_pass_worker(self, engine: TesseractAPI, img: np.ndarray, gray_preview: np.ndarray, p_config: Dict[str, Any]):
+    def _ocr_pass_worker_pyt(self, img: np.ndarray, gray_preview: np.ndarray, p_config: Dict[str, Any]):
+        """Runs a single OCR pass using Pytesseract on another thread."""
+        try:
+            processed = self.preprocess_image(img, pass_type=p_config["type"], 
+                                              custom_val=p_config["val"], 
+                                              scale=p_config["scale"],
+                                              gamma=p_config.get("gamma", 1.0),
+                                              input_gray=gray_preview if p_config["scale"] == 1.0 else None)
+            if processed is None: return None
+
+            # --- SAFETY CHECK: Prevent Tesseract "Image too small" errors ---
+            coords = cv2.findNonZero(processed)
+            if coords is None: return None
+            x, y, w, h = cv2.boundingRect(coords)
+            
+            pil_img = Image.fromarray(processed)
+            text = pytesseract.image_to_string(pil_img, config='--psm 6').strip()
+            # Pytesseract doesn't provide confidence easily in image_to_string
+            # We assign a default good confidence if text found
+            return {"text": text, "conf": 75 if text else 0, "width": w}
+        except Exception as e:
+            if self.config.get("debug_mode"):
+                print(f"Pyt-Worker Error: {e}")
+            return None
         """Runs a single OCR pass on a background thread."""
         try:
             processed = self.preprocess_image(img, pass_type=p_config["type"], 
@@ -955,26 +1121,62 @@ class VisionEngine:
             # DARK IMAGE: Use Otsu + Gamma 0.4
             passes.append({"type": OCRPass.OTSU, "val": 0, "scale": 1.0, "gamma": 0.4})
         else:
-            # BRIGHT/NORMAL IMAGE: Use Fixed 240 + Gamma 0.3
-            passes.append({"type": OCRPass.FIXED, "val": 240, "scale": 1.0, "gamma": 0.3})
+            # BRIGHT/NORMAL IMAGE: Soft thresholds for Cyan/Blue text
+            passes.append({"type": OCRPass.FIXED, "val": 180, "scale": 1.0, "gamma": 0.5})
+            passes.append({"type": OCRPass.FIXED, "val": 150, "scale": 1.0, "gamma": 0.7})
+            
+            # SPECIAL: Red channel extraction for Cyan/Blue banners
+            passes.append({"type": "RED", "val": 160, "scale": 1.0, "gamma": 0.6})
             
         # Dispatch to ThreadPool
         futures = []
-        for i, p_config in enumerate(passes):
-            # Use one of the pool engines
-            engine = self.tess_pool_main[i % len(self.tess_pool_main)]
-            futures.append(self.executor.submit(self._ocr_pass_worker, engine, img, gray_preview, p_config))
-            
         # Collect results
-        for future in futures:
-            res = future.result()
-            if res:
-                if len(res["text"]) > 2: found_valid_text = True
+        for idx, p_config in enumerate(passes):
+            try:
+                if p_config.get("type") == "RED":
+                    # Extract red channel (BGR format)
+                    chan = img[:, :, 2]
+                    
+                    # MAGICAL FIX: 3x Scale for stylized banner font
+                    scale = 3.0
+                    h, w = chan.shape[:2]
+                    process_img = cv2.resize(chan, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_CUBIC)
+                    
+                    process_img = self.adjust_gamma(process_img, gamma=1.0)
+                    _, process_img = cv2.threshold(process_img, 120, 255, cv2.THRESH_BINARY_INV)
+                    
+                    # Pad extensively
+                    pad = 50
+                    process_img = cv2.copyMakeBorder(process_img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
+                    
+                    if self.config.get("debug_mode") and self.frame_count % 30 == 0:
+                        cv2.imwrite(os.path.join(self.project_root, "debug_red_pass.png"), process_img)
+                    
+                    # Convert to PIL for pytesseract
+                    pil_img = Image.fromarray(process_img)
+                    text = pytesseract.image_to_string(pil_img, config='--psm 6').strip()
+                    conf = 85 if text else 0 
+                    width = w * scale # Approximate width for pattern manager
+                else:
+                    # Standard worker via executor
+                    res = self._ocr_pass_worker_pyt(img, gray_preview, p_config)
+                    if not res: continue
+                    text, conf, width = res["text"], res["conf"], res.get("width", 0)
                 
-                if res["conf"] > best_conf:
-                    best_conf = res["conf"]
-                    best_text = res["text"]
-                    best_width = res["width"]
+                if self.config.get("debug_mode") and text:
+                     p_type = p_config.get("type", "UNKNOWN")
+                     logger.info(f"  > Pass {idx} ({p_type}): '{text}' (Conf: {conf})")
+
+                if text:
+                    if len(text) > 2: found_valid_text = True
+                    
+                    if conf > best_conf:
+                        best_text = text
+                        best_conf = conf
+                        best_width = width
+            except Exception as e:
+                if self.config.get("debug_mode"):
+                    logger.error(f"OCR Cycle Error in pass {idx}: {e}")
                     
         return best_text, best_conf, best_width, found_valid_text
 
@@ -1039,14 +1241,24 @@ class VisionEngine:
                     time.sleep(0.1)
                     continue
 
+                # DEBUG: Save Day Region capture
+                if self.config.get("debug_mode"):
+                    current_sec = int(time.time())
+                    if current_sec % 5 == 0:
+                         debug_day_path = os.path.join(self.project_root, "debug_day_region.png")
+                         cv2.imwrite(debug_day_path, img)
+
                 if self.is_low_power_mode:
                     pass
 
                 # Store debug vars once
                 dm = self.debug_mode
                 
-                # Run OCR checks
-                best_text, best_conf, best_width, found_valid_text = self._perform_full_ocr_cycle(img, gray_preview)
+                best_text, best_conf, best_width, found_valid_text = "", 0.0, 0, False
+                if self.day_ocr_enabled:
+                    # Run OCR checks
+                    best_text, best_conf, best_width, found_valid_text = self._perform_full_ocr_cycle(img, gray_preview)
+                
                 best_center_offset = 0 # Not supported in DLL mode currently
                 best_word_data = {}    # Not supported in DLL mode currently
                 
@@ -1078,6 +1290,9 @@ class VisionEngine:
                     self.last_ocr_conf = best_conf
                     self.last_brightness = brightness
                     
+                    if self.debug_callback:
+                         self.debug_callback("Zone", best_text, best_conf)
+
                     # Standard Callback
                     callback(best_text, best_width, best_center_offset, best_word_data, brightness, best_conf)
                 
@@ -1168,8 +1383,13 @@ class VisionEngine:
                                  if self.config.get("debug_mode"): print(f"Menu Detect Error: {e}")
                                  self.is_in_menu_state = False
 
-                # 2. Level OCR (Only if NOT in Menu)
-                if not self.is_in_menu_state and self.level_region:
+                # 2. Level OCR (Only if NOT in Menu OR if waiting for early game)
+                # CRITICAL: In early game (JOUR I displayed), icon is missing but we MUST detect Level 1
+                # So we force Level OCR even without icon if icon is missing (potential early game)
+                should_scan_level = (not self.is_in_menu_state) or (not is_icon_visible)
+                
+                if should_scan_level and self.level_region:
+                    if current_sec % 5 == 0: logger.info(f"DEBUG: Scanning Level (menu={self.is_in_menu_state}, icon={is_icon_visible})")
                     try:
                         self._process_level_ocr()
                     except Exception as e:
@@ -1210,6 +1430,62 @@ class VisionEngine:
         if time.time() - self.last_frame_timestamp > 1.0:
             return
 
+    def capture_training_sample(self, category: str):
+        """
+        Saves the current *cropped* region (Level or Runes) for training.
+        """
+        try:
+            # Determine which region to grab
+            reg = None
+            if category.lower() == "level":
+                reg = self.level_region
+            elif category.lower() == "runes":
+                reg = self.runes_region
+            elif category.lower() == "day":
+                # Day region isn't a specific crop usually, it's the whole monitor region
+                # But we can save the whole monitor region or a crop if needed.
+                # For training "JOUR I", we likely want the whole captured frame?
+                # Actually, the user wants "0-9, J, O..." from specifically the Runes/Level/Day areas.
+                # Let's save the RAW capture of the RUNES/LEVEL region.
+                pass
+                
+            if not reg: 
+                # If no specific region, save the last raw frame (Monitor Region)
+                if self.last_raw_frame is not None:
+                     self._save_image_sample("Day_Full", self.last_raw_frame)
+                return
+
+            # Capture crop
+            # Logic similar to _process_numeric_region
+            if self.last_raw_frame is not None:
+                mon_reg = self.config.get("monitor_region", {})
+                left = reg.get('left', 0)
+                top = reg.get('top', 0)
+                width = reg.get('width', 50)
+                height = reg.get('height', 30)
+                
+                rel_x = left - mon_reg.get('left', 0)
+                rel_y = top - mon_reg.get('top', 0)
+                fh, fw = self.last_raw_frame.shape[:2]
+                
+                if rel_x >= 0 and rel_y >= 0 and (rel_x + width) <= fw and (rel_y + height) <= fh:
+                     crop = self.last_raw_frame[rel_y:rel_y+height, rel_x:rel_x+width]
+                     self._save_image_sample(category, crop)
+        except Exception as e:
+            print(f"Failed to capture training sample: {e}")
+
+    def _save_image_sample(self, category, img):
+        if img is None: return
+        try:
+            training_dir = os.path.join(self.project_root, "samples_training", category)
+            os.makedirs(training_dir, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = os.path.join(training_dir, f"{ts}.png")
+            cv2.imwrite(filename, img)
+            print(f"Use for Training: Saved {filename}")
+        except Exception as e:
+            print(f"Error saving sample: {e}")
+            
         try:
             # Sanitize label
             safe_label = "".join(c for c in label if c.isalnum() or c in " -_").strip()

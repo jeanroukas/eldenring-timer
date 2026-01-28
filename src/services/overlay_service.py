@@ -68,6 +68,19 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
 
     def hide(self) -> None:
         self.schedule(0, lambda: self.unified_overlay.hide() if self.unified_overlay else None)
+
+    def toggle(self) -> None:
+        self.schedule(0, self._safe_toggle)
+
+    def _safe_toggle(self):
+        if not self.unified_overlay:
+            self.create_overlay()
+            self.unified_overlay.show()
+        else:
+            if self.unified_overlay.isVisible():
+                self.unified_overlay.hide()
+            else:
+                self.unified_overlay.show()
     
     def update_timer(self, text: str) -> None:
         self.schedule(0, lambda: self.unified_overlay.set_timer_text(text) if self.unified_overlay else None)

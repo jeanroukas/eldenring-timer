@@ -202,6 +202,14 @@ class UnifiedOverlay(DraggableWindow):
         painter.setPen(color_gold)
         painter.drawText(col1_x + 2, y_top + 30, phase.upper())
         
+        # DEBUG LOGGING (User Request)
+        # The 'phase' variable is already defined and shortened above.
+        if not hasattr(self, "last_debug_phase"):
+            self.last_debug_phase = None
+        if self.last_debug_phase != phase:
+            print(f"DEBUG UI OVERLAY: Drawing Phase '{phase}'")
+            self.last_debug_phase = phase
+            
         # Level Progress (NEW)
         pot = self.stats.get("potential_level", lvl)
         level_str = f"Level {lvl}"
@@ -368,43 +376,42 @@ class UnifiedOverlay(DraggableWindow):
         if nr_config:
             path_ideal = QPainterPath()
             
-            # Sim parameters (Aligned with 14m Phases)
-            # Day 1: 14 mins (840s)
-            day1_dur = 840 
-            # Day 2: 14 mins (840s) for Farming
-            day2_dur = 840
+            # Constants matching StateService
+            day1_dur = 1200  # 20 mins
+            day2_dur = 1200  # 20 mins
+            farming_goal = 337578 # 437,578 - 100,000 (Bosses)
             
-            # Key Rune Targets
-            # Day 1 End: ~180k (Level 9.5 Goal)
-            runes_day1_end = 180881
-            # Boss 1 Drop: 50k
             boss1_drop = 50000
-            # Day 2 Start = 230k
-            runes_day2_start = runes_day1_end + boss1_drop
-            # Day 2 End: Level 14 Goal (~437k)
-            runes_day2_end = 437578
+            
+            # Calculate Day 1 End Value (Continuous Farming)
+            # Formula: Goal * (ratio ** 1.35)
+            # Ratio at 1200s = 1200/2400 = 0.5
+            val_d1_farming = farming_goal * (0.5 ** 1.35)
+            
+            start_d2 = val_d1_farming + boss1_drop
+            target_end = 437578 # Lvl 14 Total
+            
+            rem_farming = target_end - start_d2 # Growth needed in Day 2 (excluding Boss 2 drop which is at end)
+            # Actually, target_end is reached BEFORE Boss 2 drop? 
+            # "Level 14 au debut du boss". Yes.
             
             for t in range(x_range_max + 1):
                 val = 0
                 
                 if t < day1_dur:
-                    # Phase 1: Day 1 (0 -> 14m)
-                    # Expo curve to target
-                    ratio = t / float(day1_dur)
-                    if ratio < 0: ratio = 0
-                    val = runes_day1_end * (ratio ** 1.2)
+                    # Phase 1: Day 1 (0 -> 20m)
+                    # Power 1.35
+                    ratio = t / 2400.0
+                    val = farming_goal * (ratio ** 1.35)
                     
                 else:
-                    # Phase 2: Day 2 (14m -> 28m)
-                    # Starts higher (Jump), then exponential growth
+                    # Phase 2: Day 2 (20m -> 40m)
+                    # Power 1.15
+                    t_d2 = t - day1_dur
+                    ratio_d2 = t_d2 / float(day2_dur)
+                    if ratio_d2 > 1.0: ratio_d2 = 1.0
                     
-                    # Normalize t to 0..1 range for this phase
-                    phase_t = t - day1_dur
-                    ratio = phase_t / float(day2_dur)
-                    if ratio > 1.0: ratio = 1.0
-                    
-                    # Curve from Start to End
-                    val = runes_day2_start + (runes_day2_end - runes_day2_start) * (ratio ** 1.2)
+                    val = start_d2 + rem_farming * (ratio_d2 ** 1.15)
                 
                 px = graph_x + t * step_x
                 py = graph_y + graph_h - (val / y_range_max * graph_h)
@@ -564,8 +571,24 @@ class UnifiedOverlay(DraggableWindow):
                  elif bg_type == "RECOVERY": icon = "♻️"
                  elif bg_type == "BOSS": icon = "⚔️"
                  
-                 painter.setFont(QFont("Segoe UI Emoji", 12)) 
                  painter.drawText(int(px) - 6, int(graph_y + graph_h) - 10, icon)
+                 
+        # --- SHORTCUTS FOOTER (User Request) ---
+        # --- SHORTCUTS HEADER (ROBUST) ---
+        # Draw a semi-transparent black strip at the very top to ensure contrast
+        header_height = 22
+        painter.fillRect(0, 0, w, header_height, QColor(0, 0, 0, 180))
+        
+        shortcut_font = QFont("Arial", 9, QFont.Weight.Bold)
+        painter.setFont(shortcut_font)
+        painter.setPen(QColor(255, 255, 255)) # Pure White
+        
+        shortcuts = "F5:Rst  F6:D2  F7:D3  F8:Boss  F9:UI  F10:Undo  F11:Quit"
+        
+        fm = QFontMetrics(shortcut_font)
+        sw = fm.horizontalAdvance(shortcuts)
+        # Vertically center in the strip: strip starts at 0, height 22. Text baseline approx 15.
+        painter.drawText(int(w/2 - sw/2), 16, shortcuts)
                  
     def show_recording(self, show: bool):
         self.is_recording = show

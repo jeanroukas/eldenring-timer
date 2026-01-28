@@ -30,6 +30,8 @@ class PatternManager:
             
             "JOUR 1": {"target": "DAY 1", "weight": 60},
             "JOUR I":  {"target": "DAY 1", "weight": 60},
+            "JOUR I,": {"target": "DAY 1", "weight": 70}, # Common OCR artifact
+            "JOUR I.": {"target": "DAY 1", "weight": 70}, # Common OCR artifact
             "JOURI":  {"target": "DAY 1", "weight": 60},
             "JOU I":  {"target": "DAY 1", "weight": 40},
             

@@ -15,6 +15,8 @@ from src.ui.region_selector import RegionSelector
 from src.ui.settings_window import SettingsWindow
 
 from src.ui.state_inspector import StateInspectorWindow
+from src.ui.debug_overlay import DebugOverlayManager
+from src.ui.ocr_tuner import OCRTunerWindow
 
 # Set DPI Awareness
 try:
@@ -238,6 +240,15 @@ class Launcher:
     def start_application(self):
         print("Starting Services...")
         self.container.initialize_all()
+        
+        # Initialize Debug Overlay (After config is loaded)
+        self.debug_manager = DebugOverlayManager(self.config_service)
+        self.vision_service.set_debug_callback(self.debug_manager.update)
+        
+        # Show Tuner
+        self.tuner_window = OCRTunerWindow(self.vision_service)
+        self.tuner_window.show()
+
 
 if __name__ == "__main__":
     launcher = Launcher()

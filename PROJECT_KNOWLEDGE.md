@@ -10,30 +10,47 @@ This document serves as the "Source of Truth" for the Elden Ring Timer project, 
 
 Target: Level 15 Max.
 
-- **Total Runes Required**: **513,116** Runes (Lvl 1 -> 15).
-- **Night 1 Boss Revenue**: ~11,000 Runes.
+- **Total Runes Required**: **512,936** Runes (Lvl 1 -> 15).
+- **Ideal Target**: Reach **Level 14** at the start of Boss 2 (approx 28 min).
+- **Post-Target**: +50k runes after Boss 2, then flat (minimal farm).
+- **Night 1 Boss Revenue**: ~50,000 Runes.
 - **Night 2 Boss Revenue**: ~50,000 Runes.
-- **Farming Goal**: Total - Bosses = ~**452,116 Runes** to be farmed during Day phases.
-- **Snowball Factor**: 1.7 (Exponential progression).
+- **Snowball Factor**: **1.35** (Day 1) -> **1.15** (Day 2). *To be moved to config.json*.
 
 ### Run Phases & Transitions
 
-The application tracks progress through defined game phases. Transitions are triggered by specific OCR patterns ("JOUR I", "JOUR II", etc.) or the "RÉSULTAT" victory banner.
+The application tracks progress through defined game phases. Transitions happen automatically or via detection:
+
+#### Automatic Timer-Based Transitions
+
+- **All timed phases** (Storm, Shrinking): Automatically advance to next phase when timer reaches 00:00
+- Example: Day 2 - Shrinking 2 (3:00) → Boss 2 (automatic)
+
+#### OCR-Based Transitions
 
 - **Day 1 (Storm)**:
-  - Triggers: "JOUR I", "JOUR 1", "JOURI".
-  - Effect: **Reset Level to 1**. Reset timer. Start new Session Log (`Run_N_Storm...`). Reset RPS history (40s).
+  - Triggers: "JOUR I", "JOUR 1", "JOURI"
+  - Effect: **Reset Level to 1**. Reset timer to "00:00" / "Game Init". Start new Session Log
 - **Day 2 (Storm)**:
-  - Triggers: "JOUR II", "JOUR 2", "JOURII".
-  - **Prerequisite**: Must be in **Boss 1 Phase** (Index 4).
-- **Day 3 (Preparation & Final Boss)**:
-  - Triggers: "JOUR III", "JOUR 3", "JOURIII".
-  - **Prerequisite**: Must be in **Boss 2 Phase** (Index 9).
-  - *Boosted OCR*: Weights for "JOUR III" are heavily boosted to overcome Day 1/2 noise.
-- **Boss Phases**:
-  - **Boss 1 & 2**: RPS calculation and graph progress are **PAUSED** to keep farm statistics accurate.
-- **Victory Condition**:
-  - Trigger: Detection of "RÉSULTAT" (or fuzzy matches like "RESULT") via dedicated scan region.
+  - Triggers: "JOUR II", "JOUR 2", "JOURII"
+  - **Prerequisite**: Must be in **Boss 1 Phase** (Strict or Manual Override)
+
+#### Black Screen Fade Detection
+
+- **Boss 2 → Day 3 Preparation**:
+  - Trigger: Black screen fade (0.3s - 3.0s duration)
+  - **NOT** OCR-based (no "JOUR III" detection needed)
+- **Day 3 Prep → Final Boss**:
+  - Trigger: Black screen fade (0.3s - 3.0s duration)
+  - Requires 10s delay after entering Day 3 Prep
+
+#### Boss Phases
+
+- **Boss 1 & 2**: RPS calculation and graph progress are **PAUSED**
+
+#### Victory Condition
+
+- Trigger: Detection of "RÉSULTAT"
 
 ---
 
@@ -43,26 +60,22 @@ We utilize a mathematical model to assess real-time performance against an ideal
 
 ### Stepped "Snowball" Model
 
-The model now better reflects game reality by separating **Farming Progress** (Continuous) from **Boss Rewards** (Discrete Steps).
-
 #### Base Constants
 
-- **Farming Goal**: 452,116 Runes.
-- **Total Farming Time**: 40 Minutes (2400s).
-- **Boss 1 Bonus**: 11,000 Runes (at 20 mins).
-- **Boss 2 Bonus**: 50,000 Runes (at 40 mins).
-- **Start Delay**: 15s (Falling/Loading).
+- **Farming Goal**: 512,936 Runes (Total).
+- **Snowball Factors**:
+  - Day 1: **1.35**
+  - Day 2: **1.15**
 
 #### Formula: $Ideal(t)$
 
 1. **Effective Time**: $t_{eff} = \max(0, t - 15)$.
 2. **Base Farming (Continuous)**:
-    $$ \text{Runes}_{farm} = 452,116 \times \left( \frac{t_{eff}}{2400} \right)^{1.7} $$
+    - Splits calculation based on Day 1 End time.
+    - Uses 1.35 power for first segment, 1.15 for second.
 3. **Boss Steps (Discrete)**:
-    - If $t_{eff} > 1200$ (20m): Add 11,000.
-    - If $t_{eff} > 2400$ (40m): Add 50,000.
-
-**Total Ideal**: $\text{Runes}_{farm} + \text{Bonus}$
+    - Adds 50,000 at Day 1 End.
+    - Adds 50,000 at Day 2 End.
 
 ---
 
@@ -70,38 +83,31 @@ The model now better reflects game reality by separating **Farming Progress** (C
 
 ### Tracking Logic
 
-- **Total Runes Accumulés (UI/Graphe)**: `Runes Dépensées (Niveaux)` + `Runes Actuelles` + `lost_runes_pending`.
-  - *Note*: Cette formule est dite "Puissance Effective". Elle n'inclut PAS les dépenses marchandes ni les pertes permanentes, afin d'afficher des "trous" de progression sur le graphique.
-- **Total Wealth (Log Session)**: Somme brute incluant marchands et pertes.
+- **Green Curve (Real)**: Corrected total. Monotonic (Ratchet). No dips allowed except Death/Spend.
+- **Orange Curve (Sensor)**: Raw OCR data. Shows glitches/dips for debugging.
 - **Merchant Spending**: Detected when `current_runes` decreases while Level remained stable.
 
 ### 🛡️ "Stat-Based" Death Logic (Revised Jan 2026)
 
-To deal with variable localizations and OCR reliability, we moved from text-based detection ("VOUS AVEZ PERI") to a **Strict Stat Interaction Model**:
+To deal with variable localizations and OCR reliability:
 
 **Death Condition**:
 
 1. 📉 **Level Drop**: The Level decreases EXACTLY by 1 (e.g., 9 -> 8).
-    - Drops > 1 are rejected as OCR errors.
-2. 💰 **Runes -> Zero**: The Rune count drops to **< 50**.
-    - We allow small non-zero values (e.g., 8, 42) to account for OCR noise on the dark screen background.
-    - If Runes stay high (e.g., 1000+), the Level Drop is rejected as an OCR error.
-
-*Note: Black Screen detection is still tracked but no longer mandatory for the trigger, to avoid missing deaths where the screen doesn't go fully black or timing is off.*
+    - Drops > 1 are rejected as OCR glitches.
+2. 💰 **Runes -> Zero**: The Rune count drops to **< 50** (or low value).
+3. **Black Screen**: **OPTIONAL**. Used for confidence but not a blocker (some deaths are instant/cutscenes).
 
 ### ♻️ "All or Nothing" Recovery Logic
 
-- **Recovery Condition**: A rune gain is classified as a "Recovery" ONLY if it matches the pending bloodstain amount **EXACTLY** (with a tiny tolerance of ±5 runes for OCR jitter).
-- **Strict Logic**:
-  - Match -> ✅ **RECOVERED**. (`lost_runes_pending` becomes 0).
-  - No Match -> 🚜 **FARMING**. (Treated as standard gain, `lost_runes_pending` persists).
-- **Double Death**: If a new death occurs while `lost_runes_pending > 0`, those pending runes are moved to `permanent_loss` but remain in the "Total Accumulated" graph to reflect total lifetime wealth.
+- **Recovery Condition**: A rune gain is classified as a "Recovery" ONLY if it matches the pending bloodstain amount **EXACTLY**.
+- **Double Death**: Pending runes are **LOST** (Deleted from total acquired & potential).
+- **Reset Guard**: Manual Shortcuts FORCE state changes.
+- **Loading vs Death**:
+  - **Loading**: Same level, Same runes after black screen.
+  - **Death**: Level - 1, Runes = 0 after black screen.
 
 ---
-
-- [x] **Phase 8: Graph Strategy (Effective Wealth)** <!-- id: 33 -->
-  - [x] Implement "Effective Wealth" formula for Graph <!-- id: 34 -->
-  - [x] Add `total_wealth` vs `effective_wealth` toggle logic <!-- id: 35 -->
 
 ## 🖥️ UI Architecture: "Unified Dashboard"
 
@@ -109,10 +115,11 @@ The UI has been consolidated into a single "Unified Overlay" (`qt_overlay.py`) u
 
 ### Layout Specs
 
-- **Left Column**: Timer, Phase, Level -> Potential, Missing Runes.
-- **Center Column**: Analytics (RPS, Next Level Prediction, Grade S/A/B).
-- **Right Column**: Stats (Merch, Deaths, Recov, OCR).
-- **Bottom Graph**: Full run history with Event Markers (💀, ♻️, ⚔️) and dashed benchmarks.
+- **Main focus**: Timer (Chrono), Grade (Rank), and Missing Runes.
+- **Level-Up Indicator (NEW)**: A "Royale Blue" circle (approx 300px diameter) around the Level OCR region.
+  - 1 Circle = 1 level possible.
+  - 2 Circles = 2 levels possible, etc.
+- **Bottom Graph**: Dual Plot (Green=Real, Orange=Sensor).
 
 ---
 
@@ -120,19 +127,31 @@ The UI has been consolidated into a single "Unified Overlay" (`qt_overlay.py`) u
 
 ### Multi-Monitor Coordinates
 
-- **Capture Engine**: PIL `ImageGrab` with `all_screens=True` to support negative coordinate offsets.
-- **High Performance**: Uses `libtesseract-5.dll` (TessAPI) directly (20ms latency).
+- **Capture Engine**: PIL `ImageGrab` with `all_screens=True`.
 
 ### Global Black Screen Detection
 
 - **Mechanism**: Monitors brightness globally to validate deaths.
 - **Threshold**: Brightness < 3.
 
+### Conditional Vision (Menu Scan)
+
+- **Rule**: Main Menu Screen ("Game Init") is checked **only if** the Rune Icon (gameplay HUD) is **NOT visible**.
+- **Insight**: The Rune Icon is always visible in gameplay but hidden in menus/inventory. The Menu Icon is only in the main title screen.
+
 ### Robustness & Consensus
 
 - **Level Consensus**: 2 consecutive identical readings required.
 - **Rune "Burst" Validation**: 5 high-speed scans on change, requiring 3/5 majority.
 - **Flicker Filtering**: Transitions of ±1 rune are smoothed or ignored.
+
+### Boss HP Detection (PROPOSED)
+
+- **Mechanism**: Use image analysis (template matching or color histograms) to monitor the Boss HP bar area.
+- **Goals**:
+  - Confirm Victory/Defeat based on bar depletion vs. player death.
+  - Estimate Time-to-Kill (TTK) based on depletion rate.
+  - Handle multi-bars (e.g., Godrick, Malenia phases).
 
 ---
 
@@ -195,3 +214,7 @@ To optimize performance and accuracy:
 
 - **Recording Dot**: Removed red pulsing dot from Timer area (UI cleanup).
 - **Grade**: Now S-F based on Delta from Ideal Curve (S = +10% ahead).
+- **Hotkeys**:
+  - **J1 / J2 / J3**: Consolidated on a single context-aware hotkey.
+  - **F9**: Open OCR Tuner.
+  - **F10**: Exit Application.

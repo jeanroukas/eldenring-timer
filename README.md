@@ -36,12 +36,22 @@ This application monitors your gameplay in real-time, detecting specific trigger
 
 ### Controls & Hotkeys
 
-- **`q` or `Ctrl+Q`**: Quit the application.
-- **`&` (1)**: Force trigger "JOUR I".
-- **`é` (2)**: Force trigger "JOUR II".
-- **`"` (3)**: Force trigger "JOUR III".
-- **`(` (5)**: Cancel/False Alarm.
-- **System Tray**: Right-click the tray icon to access Settings or Quit.
+- **`Ctrl+F5`**: Reset / Start Day 1
+- **`F6`**: Force Day 2
+- **`F7`**: Force Day 3
+- **`F8`**: Skip to next boss/phase
+- **`F9`**: Toggle UI visibility
+- **`F10`**: Undo last action
+- **`F11`**: Quit the application
+- **System Tray**: Right-click the tray icon to access Settings or Quit
+
+### Phase Transitions
+
+The timer automatically advances through phases:
+
+- **Timer-based**: Phases with fixed durations (Storm, Shrinking) advance automatically when time expires
+- **OCR-based**: Boss 1 → Day 2 transition uses "JOUR II" text detection
+- **Black screen**: Boss 2 → Day 3 and Day 3 Prep → Final Boss use black screen fade detection (0.3-3.0s)
 
 ## Configuration
 
