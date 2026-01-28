@@ -63,7 +63,8 @@ class VisionEngine:
         self.region_override = None
         self.secondary_running = False
         
-        self.debug_callback = None # New Debug Callback
+        self.debug_image_callback = None # New Debug Callback
+        self.debug_callback = None # Legacy/Text Debug Callback
         
         # Debug / Inspector State
         self.last_ocr_text = ""
@@ -103,7 +104,8 @@ class VisionEngine:
         # Load from config or use defaults
         default_params = {
             "Runes": { "scale": 1.0, "gamma": 1.9, "thresh": 255, "dilate": 0, "psm": 7, "mode": "Digits", "padding": 20 },
-            "Level": { "scale": 4.0, "gamma": 0.6, "thresh": 160, "dilate": 1, "psm": 7, "mode": "Digits", "padding": 20 }
+            "Level": { "scale": 4.0, "gamma": 0.6, "thresh": 160, "dilate": 1, "psm": 7, "mode": "Digits", "padding": 20 },
+            "Day":   { "scale": 1.0, "gamma": 0.5, "thresh": 180, "dilate": 0, "psm": 6, "mode": "Custom", "padding": 20 }
         }
         self.ocr_params = self.config.get("ocr_params", default_params)
         
@@ -394,13 +396,19 @@ class VisionEngine:
 
     def set_level_callback(self, callback):
         self.level_callback = callback
-
+            
     def set_runes_callback(self, callback):
         self.runes_callback = callback
+
+    def set_debug_image_callback(self, callback):
+        self.debug_image_callback = callback
+
+    def set_debug_callback(self, callback):
+        """Sets the text-based debug callback (for LED overlays)."""
+        self.debug_callback = callback
         
     def set_menu_callback(self, callback):
         self.menu_callback = callback
-        self.debug_image_callback = None
 
 
     def update_config(self, new_config):
@@ -687,6 +695,31 @@ class VisionEngine:
                          gamma: float = 1.0, input_gray: np.ndarray = None) -> np.ndarray:
         if img is None and input_gray is None: return None
         
+        # --- Handle RED Channel Special Pass ---
+        if pass_type == "RED" and img is not None:
+             # Extract Red Channel (Index 2 in BGR)
+             # Note: img is BGR
+             chan = img[:, :, 2]
+             
+             # Resize
+             if scale != 1.0:
+                 h, w = chan.shape[:2]
+                 chan = cv2.resize(chan, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_CUBIC)
+             
+             # Gamma
+             if gamma != 1.0:
+                 chan = self.adjust_gamma(chan, gamma)
+             
+             # Threshold
+             val = custom_val if custom_val > 0 else 120
+             _, thresh = cv2.threshold(chan, val, 255, cv2.THRESH_BINARY_INV)
+             
+             # Padding for RED (previously hardcoded to 50)
+             pad = 50
+             thresh = cv2.copyMakeBorder(thresh, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
+             
+             return thresh
+        
         # Dynamic Scaling
         # Optimization: If no scaling needed and input_gray provided, skip resize
         if scale == 1.0 and input_gray is not None:
@@ -859,6 +892,10 @@ class VisionEngine:
                 if self.debug_image_callback:
                     self.debug_image_callback(process_name, thresh, conf)
                 
+                # Update LED/Text Debug Overlay
+                if self.debug_callback:
+                    self.debug_callback(process_name, text, conf)
+                
                 if process_name == "Level" and self.config.get("debug_mode"):
                     current_sec = int(time.time())
                     if current_sec % 2 == 0:  # Every 2 seconds
@@ -878,9 +915,8 @@ class VisionEngine:
                          logger.info(f"OCR RAW ({process_name}): '{text}' Conf: {conf}")
 
                 # --- UNIFIED DEBUG CALLBACK (Post-Clean) ---
-                if self.debug_callback:
-                    # Provide the text EXACTLY as we logic sees it
-                    self.debug_callback(process_name, text, conf)
+                # self.debug_image_callback already called with image above
+                pass
 
                 # Extract first numeric sequence
                 numeric_match = re.search(r'\d+', text)
@@ -1054,6 +1090,11 @@ class VisionEngine:
                                               gamma=p_config.get("gamma", 1.0),
                                               input_gray=gray_preview if p_config["scale"] == 1.0 else None)
             if processed is None: return None
+            
+            # --- DEBUG PREVIEW (For OCR Tuner) ---
+            # Show the processed image EXACTLY as Tesseract will see it
+            if "debug_callback" in p_config:
+                 p_config["debug_callback"]("Day", processed, 0.0)
 
             # --- SAFETY CHECK: Prevent Tesseract "Image too small" errors ---
             coords = cv2.findNonZero(processed)
@@ -1104,81 +1145,80 @@ class VisionEngine:
     def _perform_full_ocr_cycle(self, img: np.ndarray, gray_preview: np.ndarray):
         """Internal helper for a complete OCR run (all passes in PARALLEL)."""
         best_text = ""
-        best_conf = 0.0
+        best_val = 0.0
         best_width = 0
-        found_valid_text = False
+        found = False
         
         # Optimization: Only scan if it's worth it
         if not self.is_worth_ocr(gray_preview):
              return "", 0.0, 0, False
 
-        # --- ADAPTIVE LOGIC (Data-Driven from Fine-Tuning) ---
+        # --- ADAPTIVE LOGIC (User Tunable + Data-Driven) ---
         # Analyze brightness to choose the best strategy
         mean_brightness = np.mean(gray_preview)
         
+        # Get Tunable Parameters (Defaults: scale=1.0, gamma=0.5, thresh=180)
+        day_params = self.ocr_params.get("Day", self.ocr_params["Runes"]) # Fallback if missing
+        base_scale = day_params.get("scale", 1.0)
+        base_gamma = day_params.get("gamma", 0.5)
+        base_thresh = day_params.get("thresh", 180)
+        
         passes = []
         if mean_brightness < 70:
-            # DARK IMAGE: Use Otsu + Gamma 0.4
-            passes.append({"type": OCRPass.OTSU, "val": 0, "scale": 1.0, "gamma": 0.4})
+            # DARK IMAGE: Use Otsu + Gamma 0.4 (or slightly modified base gamma)
+            # We respect the user's Scale choice, but force Otsu for dark scenes
+            passes.append({"type": OCRPass.OTSU, "val": 0, "scale": base_scale, "gamma": 0.4})
         else:
-            # BRIGHT/NORMAL IMAGE: Soft thresholds for Cyan/Blue text
-            passes.append({"type": OCRPass.FIXED, "val": 180, "scale": 1.0, "gamma": 0.5})
-            passes.append({"type": OCRPass.FIXED, "val": 150, "scale": 1.0, "gamma": 0.7})
+            # BRIGHT/NORMAL IMAGE: Use Tuned Parameters
+            
+            # Pass 1: Exact User Settings (PRIMARY)
+            passes.append({"type": OCRPass.FIXED, "val": int(base_thresh), "scale": base_scale, "gamma": base_gamma})
+            
+            # Pass 2: Variant (Lower Thresh, Higher Gamma) - Auto-derived
+            # If user sets Thresh 180 -> Pass 2 is 150. If user sets 200 -> Pass 2 is 170.
+            passes.append({"type": OCRPass.FIXED, "val": max(50, int(base_thresh) - 30), "scale": base_scale, "gamma": base_gamma + 0.2})
             
             # SPECIAL: Red channel extraction for Cyan/Blue banners
-            passes.append({"type": "RED", "val": 160, "scale": 1.0, "gamma": 0.6})
+            # Hardcoded mostly as it's specific physics, but using base scale logic if needed
+            # Scale 3.0x relative to base, Gamma 1.0 default, Thresh 120 default
+            passes.append({"type": "RED", "val": 120, "scale": base_scale * 3.0, "gamma": 1.0})
             
         # Dispatch to ThreadPool
         futures = []
-        # Collect results
-        for idx, p_config in enumerate(passes):
-            try:
-                if p_config.get("type") == "RED":
-                    # Extract red channel (BGR format)
-                    chan = img[:, :, 2]
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            for idx, p_config in enumerate(passes):
+                # Inject Debug Callback into PRIMARY Pass (Index 0)
+                # This ensures the Tuner sees the image affected by the sliders
+                if idx == 0 and self.debug_image_callback:
+                    p_config["debug_callback"] = self.debug_image_callback
                     
-                    # MAGICAL FIX: 3x Scale for stylized banner font
-                    scale = 3.0
-                    h, w = chan.shape[:2]
-                    process_img = cv2.resize(chan, (int(w*scale), int(h*scale)), interpolation=cv2.INTER_CUBIC)
-                    
-                    process_img = self.adjust_gamma(process_img, gamma=1.0)
-                    _, process_img = cv2.threshold(process_img, 120, 255, cv2.THRESH_BINARY_INV)
-                    
-                    # Pad extensively
-                    pad = 50
-                    process_img = cv2.copyMakeBorder(process_img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
-                    
-                    if self.config.get("debug_mode") and self.frame_count % 30 == 0:
-                        cv2.imwrite(os.path.join(self.project_root, "debug_red_pass.png"), process_img)
-                    
-                    # Convert to PIL for pytesseract
-                    pil_img = Image.fromarray(process_img)
-                    text = pytesseract.image_to_string(pil_img, config='--psm 6').strip()
-                    conf = 85 if text else 0 
-                    width = w * scale # Approximate width for pattern manager
-                else:
-                    # Standard worker via executor
-                    res = self._ocr_pass_worker_pyt(img, gray_preview, p_config)
-                    if not res: continue
-                    text, conf, width = res["text"], res["conf"], res.get("width", 0)
-                
-                if self.config.get("debug_mode") and text:
-                     p_type = p_config.get("type", "UNKNOWN")
-                     logger.info(f"  > Pass {idx} ({p_type}): '{text}' (Conf: {conf})")
+                futures.append(executor.submit(self._ocr_pass_worker_pyt, img, gray_preview, p_config))
 
-                if text:
-                    if len(text) > 2: found_valid_text = True
+            # Collect results
+            for future in futures:
+                try:
+                    res = future.result()
+                    if not res: continue
                     
-                    if conf > best_conf:
-                        best_text = text
-                        best_conf = conf
-                        best_width = width
-            except Exception as e:
-                if self.config.get("debug_mode"):
-                    logger.error(f"OCR Cycle Error in pass {idx}: {e}")
+                    text, conf, width = res["text"], res["conf"], res.get("width", 0)
                     
-        return best_text, best_conf, best_width, found_valid_text
+                    if text:
+                        if len(text) > 2: found = True
+                        
+                        # Logic to keep best result (longest text or highest conf?)
+                        if len(text) > len(best_text): # Prefer longer text
+                            best_text = text
+                            best_val = conf
+                            best_width = width
+                        elif len(text) == len(best_text) and conf > best_val:
+                            best_text = text
+                            best_val = conf
+                            best_width = width
+                except Exception as e:
+                    if self.config.get("debug_mode"):
+                        logger.error(f"OCR Future Error: {e}")
+
+        return best_text, best_val, best_width, found
 
     def _day_burst(self, callback, brightness):
         """Takes 4 additional high-speed samples to confirm a detection."""

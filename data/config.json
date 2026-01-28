@@ -37,7 +37,7 @@
         "width": 298,
         "height": 58
     },
-    "session_count": 363,
+    "session_count": 389,
     "unified_pos_x": 1648,
     "unified_pos_y": 82,
     "runes_icon_region": {
@@ -83,6 +83,15 @@
             "dilate": 0,
             "psm": 7.0,
             "mode": "Digits",
+            "padding": 50
+        },
+        "Day": {
+            "scale": 0.4,
+            "gamma": 0.5,
+            "thresh": 180,
+            "dilate": 0,
+            "psm": 7,
+            "mode": "Custom",
             "padding": 50
         }
     },

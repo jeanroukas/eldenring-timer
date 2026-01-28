@@ -517,11 +517,20 @@ class UnifiedOverlay(DraggableWindow):
         painter.setFont(QFont("Cinzel", 9, QFont.Weight.Bold))
         
         for trans in transitions:
-            trans_name = trans.get("name", "")
-            trans_t = trans.get("t", 0)
+            if isinstance(trans, dict):
+                trans_name = trans.get("name", "")
+                trans_t = trans.get("t", 0)
+            else:
+                # Fallback for legacy tuple format (timestamp, name)
+                # Ensure we have at least 2 elements
+                if len(trans) >= 2:
+                    trans_t = trans[0]
+                    trans_name = str(trans[1])
+                else:
+                    continue
             
-            # Only show Day 2 and Day 3 transitions
-            if "Day 2" in trans_name or "Day 3" in trans_name:
+            # Only show End Shrink transitions
+            if "End Shrink" in trans_name:
                 relative_t = trans_t - start_t if start_t > 0 else 0
                 if relative_t < 0: continue
                 

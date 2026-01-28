@@ -36,14 +36,21 @@ This application monitors your gameplay in real-time, detecting specific trigger
 
 ### Controls & Hotkeys
 
-- **`Ctrl+F5`**: Reset / Start Day 1
+- **`F4`**: Full Reset (Clear Run Data & Restart Sensors)
+- **`F5`**: Start Day 1 / Soft Reset
 - **`F6`**: Force Day 2
 - **`F7`**: Force Day 3
-- **`F8`**: Skip to next boss/phase
-- **`F9`**: Toggle UI visibility
-- **`F10`**: Undo last action
-- **`F11`**: Quit the application
-- **System Tray**: Right-click the tray icon to access Settings or Quit
+- **`F8`**: Boss Skip
+- **`F9`**: Open **OCR Tuner** (Pauses Logic for adjustments)
+- **`F10`**: Quit Application
+- **System Tray**: Right-click to Quit
+
+### New Features (Jan 2026)
+
+- **OCR Tuner**: Real-time adjustment of OCR parameters and regions. Press F9.
+- **Logic Pause**: Tuning pauses the game state to prevent false triggers.
+- **Debug Overlay**: Visual indicators for "Level" (Red/Orange/Green LED), "Runes", and "Zone".
+- **4-Step Graph Markers**: Vertical lines on the graph denote the end of each Shrinking phase (1.1, 1.2, 2.1, 2.2).
 
 ### Phase Transitions
 

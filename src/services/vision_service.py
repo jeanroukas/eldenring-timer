@@ -168,6 +168,50 @@ class VisionService(IVisionService):
             self.engine.set_runes_callback(self._runes_multicast_callback)
             self.engine.start_monitoring(self._multicast_callback)
 
+    def set_ocr_param(self, category: str, key: str, value: object) -> None:
+        if self.engine:
+            # Ensure category exists
+            if category not in self.engine.ocr_params:
+                self.engine.ocr_params[category] = {}
+                
+            self.engine.ocr_params[category][key] = value
+            # Update Config
+            # Note: Ideally we should use config_service to persist, but direct access for now is fine
+            # casting params to dict if needed?
+            pass
+
+    def set_region_tuner(self, profile: str, rect: tuple) -> None:
+        """Called by OCR Tuner to update specific regions."""
+        if not self.engine: return
+        
+        # Convert rect (x,y,w,h) to proper dict format
+        region = {
+            "left": int(rect[0]),
+            "top": int(rect[1]),
+            "width": int(rect[2]),
+            "height": int(rect[3])
+        }
+        
+        if profile == "Runes":
+            self.engine.update_runes_region(region)
+        elif profile == "Level":
+            self.engine.update_level_region(region)
+        elif profile == "Day":
+            self.engine.update_region(region) # Day uses main region
+
+    def add_tuning_observer(self, callback: Callable[[bool], None]) -> None:
+        """Adds an observer for tuning state changes."""
+        if not hasattr(self, 'tuning_observers'):
+            self.tuning_observers = []
+        if callback not in self.tuning_observers:
+            self.tuning_observers.append(callback)
+
+    def set_tuning_active(self, active: bool) -> None:
+        """Notifies observers that tuning (OCR Tuner) is active/inactive."""
+        if hasattr(self, 'tuning_observers'):
+            for observer in self.tuning_observers:
+                observer(active)
+
     def update_config(self):
          if self.engine:
              pass

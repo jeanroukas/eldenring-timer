@@ -129,6 +129,7 @@ class StateService(IStateService):
         self.waiting_for_day1 = False  # True when Level 1 detected, waiting for JOUR I
         
         self.tuner_callback = None
+        self.logic_paused = False # Flag to pause logic during OCR Tuning
         
         # --- NIGHTREIGN CONSTANTS (Configurable) ---
         self._load_nr_constants()
@@ -159,6 +160,7 @@ class StateService(IStateService):
         
         # Direct Callbacks (Legacy/Bridge)
         self.vision.add_observer(self.on_ocr_result)
+        self.vision.add_tuning_observer(self.on_tuning_status) # Subscription for Pause Logic
         self.vision.add_level_observer(lambda lvl, conf: bus.publish(LevelDetectedEvent(lvl, conf)))
         self.vision.add_runes_observer(lambda runes, conf: bus.publish(RunesDetectedEvent(runes, conf)))
         self.vision.set_menu_callback(lambda is_open: bus.publish(MenuDetectedEvent(is_open)))
@@ -385,6 +387,18 @@ class StateService(IStateService):
             "time_to_level": "---",
             "graph_start_time": 0
         })
+        
+        # Reset OCR Sensors (Re-enable Day OCR)
+        self._last_day_ocr_state = None # Force update
+        self._update_day_ocr_state()
+        
+        # Ensure logic is unpaused
+        self.logic_paused = False
+        
+        # Reset ui_transitions for graph
+        self.session.ui_transitions = []
+        
+        logger.info("Reset complete. Day OCR sensor re-enabled.")
         
         logger.info("Reset complete. Waiting for new run...")
         try:
@@ -863,7 +877,15 @@ class StateService(IStateService):
         pass
 
     # --- OCR & State Logic ---
+    def on_tuning_status(self, is_active: bool):
+        self.logic_paused = is_active
+        if is_active:
+             logger.info("StateService: Logic PAUSED (Tuner Active)")
+        else:
+             logger.info("StateService: Logic RESUMED")
+
     def on_ocr_result(self, text, width, offset, word_data, brightness=0, score=0):
+        if self.logic_paused: return
         self.schedule(0, lambda: self.process_ocr_trigger(text, width, offset, word_data, brightness, score))
 
     def is_stats_stable(self, seconds=1.0) -> bool:
@@ -1739,7 +1761,7 @@ class StateService(IStateService):
             "is_max_level": disp_lvl >= 15,
             "run_history": self.session.run_accumulated_history,
             "run_history_raw": self.run_accumulated_raw,
-            "transitions": self.session.day_transition_markers,
+            "transitions": getattr(self.session, 'ui_transitions', []),
             "death_count": self.session.death_count,
             "recovery_count": self.session.recovery_count,
             "phase_name": p_name,
@@ -1908,6 +1930,24 @@ class StateService(IStateService):
 
     def Trigger(self, index):
         print(f"DEBUG_TRACE: Trigger({index}) Called")
+        if index < -1 or index >= len(self.phases): return
+        
+        # --- GRAPH MARKER LOGIC (End Shrink Detection) ---
+        # We record the transition WHEN LEAVING a Shrinking Phase
+        current_idx = self.session.phase_index
+        shrink_map = {
+            1: "End Shrink 1.1", # Leaving Day 1 - Shrinking
+            3: "End Shrink 1.2", # Leaving Day 1 - Shrinking 2
+            6: "End Shrink 2.1", # Leaving Day 2 - Shrinking
+            8: "End Shrink 2.2"  # Leaving Day 2 - Shrinking 2
+        }
+        
+        if current_idx in shrink_map:
+             t_name = shrink_map[current_idx]
+             self.session.ui_transitions.append({"name": t_name, "t": time.time()})
+             if self.config.get("debug_mode"):
+                 logger.info(f"Graph Marker Added: {t_name}")
+
         self.session.timer_frozen = False
         self.session.phase_index = index
         self.session.start_time = time.time()
@@ -2296,12 +2336,15 @@ class StateService(IStateService):
 
     # --- EVENT BUS HANDLERS ---
     def _handle_level_event(self, event: LevelDetectedEvent):
+        if self.logic_paused: return
         self.on_level_detected(event.level, event.confidence)
 
     def _handle_runes_event(self, event: RunesDetectedEvent):
+        if self.logic_paused: return
         self.on_runes_detected(event.runes, event.confidence)
 
     def _handle_menu_event(self, event: MenuDetectedEvent):
+        if self.logic_paused: return
         self.on_menu_screen_detected(event.is_open)
 
     def on_menu_screen_detected(self, is_visible: bool):
@@ -2324,7 +2367,7 @@ class StateService(IStateService):
             # User request: "dès qu'elle n'est plus là on remet le chrono à 00:00 et on indique ‘game init’"
             if self.current_phase == "MENU":
                 logger.info("Menu Exited -> Resetting to GAME INIT")
-                self.initialize(self.overlay) # Full Reset? Or just phase?
+                self.reset_to_initial_state()
                 # Initialize resets everything, which is what we want for "Game Init"
                 self.current_phase = "GAME INIT"
                 self.overlay.update_phase("GAME INIT", "00:00")

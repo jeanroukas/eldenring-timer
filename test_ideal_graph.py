@@ -1,6 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Apply style BEFORE creating the figure
+plt.style.use('dark_background')
+
 def get_ideal_runes_at_time(t):
     # Constants from StateService (Phase 3 Fix)
     NR_DAY_DURATION = 840      # 14 minutes
@@ -44,8 +47,10 @@ plt.figure(figsize=(12, 6))
 plt.plot(times / 60, runes, label='Courbe Idéale (Phase 4)', color='gold', linewidth=2)
 
 # Markers
-plt.axvline(x=14, color='white', linestyle='--', alpha=0.5, label='Fin Jour 1 (14m)')
-plt.axvline(x=28, color='white', linestyle='--', alpha=0.5, label='Fin Jour 2 (28m)')
+plt.axvline(x=7.5, color='white', linestyle='--', alpha=0.5, label='End Shrink 1.1 (7.5m)')
+plt.axvline(x=14, color='white', linestyle='--', alpha=0.5, label='End Shrink 1.2 (14m)')
+plt.axvline(x=21.5, color='white', linestyle='--', alpha=0.5, label='End Shrink 2.1 (21.5m)')
+plt.axvline(x=28, color='white', linestyle='--', alpha=0.5, label='End Shrink 2.2 (28m)')
 plt.axhline(y=437578, color='green', linestyle=':', alpha=0.5, label='Objectif Lvl 14')
 plt.axhline(y=437578 + 50000, color='gold', linestyle=':', alpha=0.5, label='Final (+Boss 2)')
 
@@ -54,11 +59,12 @@ plt.xlabel("Temps (minutes)")
 plt.ylabel("Runes")
 plt.grid(True, alpha=0.2)
 plt.legend()
-plt.style.use('dark_background')
+# plt.style.use('dark_background') # Moved to top
 
 # Save
+# Save with explicit facecolor to avoid transparency issues
 output_path = "ideal_curve_preview.png"
-plt.savefig(output_path)
+plt.savefig(output_path, facecolor='black')
 print(f"Visualisation sauvegardée dans {output_path}")
 
 # Display raw numbers at key points

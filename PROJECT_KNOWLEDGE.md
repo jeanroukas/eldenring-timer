@@ -23,7 +23,12 @@ The application tracks progress through defined game phases. Transitions happen 
 
 #### Automatic Timer-Based Transitions
 
-- **All timed phases** (Storm, Shrinking): Automatically advance to next phase when timer reaches 00:00
+- **All timed phases** (Storm, Shrinking): Automatically advance to next phase when timer reaches 00:00.
+- **Shrink End Markers**: Graph logs vertical barriers at the end of each "Shrinking" phase:
+  - **End Shrink 1.1** (Day 1 - 7m30s)
+  - **End Shrink 1.2** (Day 1 - 14m00s)
+  - **End Shrink 2.1** (Day 2 - 21m30s)
+  - **End Shrink 2.2** (Day 2 - 28m00s)
 - Example: Day 2 - Shrinking 2 (3:00) → Boss 2 (automatic)
 
 #### OCR-Based Transitions
@@ -215,9 +220,10 @@ To optimize performance and accuracy:
 - **Recording Dot**: Removed red pulsing dot from Timer area (UI cleanup).
 - **Grade**: Now S-F based on Delta from Ideal Curve (S = +10% ahead).
 - **Hotkeys**:
+  - **F4**: Full Reset (Clear Run Data & Sensors)
   - **F5**: Reset / Start Day 1.
   - **F6**: Force Day 2.
   - **F7**: Force Day 3.
   - **F8**: Boss Skip / Correction.
-  - **F9**: Open OCR Tuner.
+  - **F9**: Open OCR Tuner (Pauses Logic).
   - **F10**: Exit Application.

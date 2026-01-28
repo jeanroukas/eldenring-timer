@@ -23,7 +23,8 @@ class OCRTunerWindow(QWidget):
         # Local State for profiles
         self.profiles = {
             "Runes": {"scale": 1.0, "gamma": 1.9, "thresh": 255, "dilate": 0, "psm": 7, "mode": "Digits", "padding": 20},
-            "Level": {"scale": 4.0, "gamma": 0.6, "thresh": 160, "dilate": 1, "psm": 7, "mode": "Digits", "padding": 20}
+            "Level": {"scale": 4.0, "gamma": 0.6, "thresh": 160, "dilate": 1, "psm": 7, "mode": "Digits", "padding": 20},
+            "Day":   {"scale": 1.0, "gamma": 0.5, "thresh": 180, "dilate": 0, "psm": 6, "mode": "Custom", "padding": 20}
         }
         # Try to load from vision service config if available
         if self.vision_service.engine:
@@ -59,7 +60,7 @@ class OCRTunerWindow(QWidget):
         hbox_profile = QHBoxLayout()
         hbox_profile.addWidget(QLabel("Target Profile:"))
         self.combo_profile = QComboBox()
-        self.combo_profile.addItems(["Runes", "Level"])
+        self.combo_profile.addItems(["Runes", "Level", "Day"])
         self.combo_profile.currentTextChanged.connect(self.change_profile)
         hbox_profile.addWidget(self.combo_profile)
         
@@ -127,7 +128,7 @@ class OCRTunerWindow(QWidget):
         layout.addWidget(group_preview)
 
         # Scale Control
-        group_scale = self.create_slider_group("scale", "Scale (Zoom)", 10, 60, self.profiles["Runes"]["scale"] * 10, "x{:.1f}")
+        group_scale = self.create_slider_group("scale", "Scale (Zoom)", 1, 60, self.profiles["Runes"]["scale"] * 10, "x{:.1f}")
         layout.addWidget(group_scale)
 
         # Gamma Control
@@ -209,7 +210,13 @@ class OCRTunerWindow(QWidget):
         self.selector.show()
         
     def on_region_selected(self, rect):
-        self.vision_service.set_region(self.current_profile, rect)
+        # Use new specialized method
+        if hasattr(self.vision_service, "set_region_tuner"):
+            self.vision_service.set_region_tuner(self.current_profile, rect)
+        else:
+            # Fallback legacy
+            self.vision_service.set_region(self.current_profile, rect)
+            
         print(f"OCRTuner: Redefined {self.current_profile} area to {rect}")
         
     def update_slider_ui(self, key, slider_val):
@@ -320,3 +327,11 @@ class OCRTunerWindow(QWidget):
             # Ideally btn_save should be a class member.
         except Exception as e:
             print(f"Failed to save profile: {e}")
+
+    def showEvent(self, event):
+        self.vision_service.set_tuning_active(True)
+        super().showEvent(event)
+
+    def closeEvent(self, event):
+        self.vision_service.set_tuning_active(False)
+        super().closeEvent(event)
