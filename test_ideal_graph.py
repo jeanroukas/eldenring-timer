@@ -46,15 +46,17 @@ runes = [get_ideal_runes_at_time(t) for t in times]
 plt.figure(figsize=(12, 6))
 plt.plot(times / 60, runes, label='Courbe Idéale (Phase 4)', color='gold', linewidth=2)
 
-# Markers
-plt.axvline(x=7.5, color='white', linestyle='--', alpha=0.5, label='End Shrink 1.1 (7.5m)')
-plt.axvline(x=14, color='white', linestyle='--', alpha=0.5, label='End Shrink 1.2 (14m)')
-plt.axvline(x=21.5, color='white', linestyle='--', alpha=0.5, label='End Shrink 2.1 (21.5m)')
-plt.axvline(x=28, color='white', linestyle='--', alpha=0.5, label='End Shrink 2.2 (28m)')
+# Markers (40% opacity, no labels in legend)
+# 7.5m (End Shrink 1.1), 14.0m (End Shrink 1.2), 21.5m (End Shrink 2.1), 28.0m (End Shrink 2.2)
+plt.axvline(x=7.5, color='white', linestyle='-', alpha=0.4)
+plt.axvline(x=14.0, color='white', linestyle='-', alpha=0.4)
+plt.axvline(x=21.5, color='white', linestyle='-', alpha=0.4)
+plt.axvline(x=28.0, color='white', linestyle='-', alpha=0.4)
+
 plt.axhline(y=437578, color='green', linestyle=':', alpha=0.5, label='Objectif Lvl 14')
 plt.axhline(y=437578 + 50000, color='gold', linestyle=':', alpha=0.5, label='Final (+Boss 2)')
 
-plt.title("Visualisation de la Courbe Idéale (Elden Ring Timer)")
+plt.title("Visualisation de la Courbe Idéale with Markers (40% Opacity)")
 plt.xlabel("Temps (minutes)")
 plt.ylabel("Runes")
 plt.grid(True, alpha=0.2)

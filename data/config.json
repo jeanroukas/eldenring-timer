@@ -16,7 +16,7 @@
     },
     "save_raw_samples": false,
     "auto_hibernate": false,
-    "audio_volume": 78,
+    "audio_volume": 70,
     "audio_enabled": true,
     "audio_device_id": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\AudioOutput\\TokenEnums\\MMAudioOut\\{0.0.0.00000000}.{966c08a8-3e20-4ad7-bc15-e2085e23bb95}",
     "audio_rate": 238,
@@ -37,9 +37,9 @@
         "width": 298,
         "height": 58
     },
-    "session_count": 389,
+    "session_count": 463,
     "unified_pos_x": 1648,
-    "unified_pos_y": 82,
+    "unified_pos_y": 83,
     "runes_icon_region": {
         "top": 115,
         "left": 3364,
@@ -64,13 +64,21 @@
         "Runes": {
             "x": 3604,
             "y": 63
+        },
+        "Reward": {
+            "x": 3044,
+            "y": 63
+        },
+        "Menu": {
+            "x": 2861,
+            "y": 64
         }
     },
     "ocr_params": {
         "Runes": {
             "scale": 1.0,
-            "gamma": 1.0,
-            "thresh": 105,
+            "gamma": 1.5,
+            "thresh": 109,
             "dilate": 0,
             "psm": 7,
             "mode": "Digits",
@@ -86,13 +94,13 @@
             "padding": 50
         },
         "Day": {
-            "scale": 0.4,
+            "scale": 0.3,
             "gamma": 0.5,
             "thresh": 180,
             "dilate": 0,
             "psm": 7,
             "mode": "Custom",
-            "padding": 50
+            "padding": 15
         }
     },
     "nightreign": {

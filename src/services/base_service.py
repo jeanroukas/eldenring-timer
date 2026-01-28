@@ -59,6 +59,11 @@ class IVisionService(IService):
         pass
 
     @abstractmethod
+    def request_level_burst(self) -> List[int]:
+        """Triggers a high-speed burst of level scans and returns the results."""
+        pass
+
+    @abstractmethod
     def add_observer(self, callback: Callable[[str, Dict], None]) -> None:
         """Register a callback for OCR results."""
         pass

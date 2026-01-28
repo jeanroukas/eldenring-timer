@@ -139,6 +139,8 @@ class DebugOverlayManager(QObject):
         self.create_widget("Runes")
         self.create_widget("Level")
         self.create_widget("Zone") # Day/Zone Text
+        self.create_widget("Menu") # Main Menu
+        self.create_widget("Reward") # Victory/Boss Banner
 
     def create_widget(self, name: str):
         widget = OCRDebugWidget(name)

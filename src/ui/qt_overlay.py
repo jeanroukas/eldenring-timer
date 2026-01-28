@@ -511,64 +511,43 @@ class UnifiedOverlay(DraggableWindow):
         # label = "VIEW: PROJECTION (40m)" if self.show_projection else "VIEW: REAL-TIME"
         # painter.drawText(graph_x + 10, graph_y + 20, label)
         
-        # --- DAY TRANSITION VERTICAL BARS ---
-        # Draw vertical lines at Day 2 and Day 3 transitions
-        painter.setPen(QPen(QColor(255, 255, 255, 100), 2, Qt.PenStyle.DashLine))
-        painter.setFont(QFont("Cinzel", 9, QFont.Weight.Bold))
-        
-        for trans in transitions:
-            if isinstance(trans, dict):
-                trans_name = trans.get("name", "")
-                trans_t = trans.get("t", 0)
-            else:
-                # Fallback for legacy tuple format (timestamp, name)
-                # Ensure we have at least 2 elements
-                if len(trans) >= 2:
-                    trans_t = trans[0]
-                    trans_name = str(trans[1])
-                else:
-                    continue
-            
-            # Only show End Shrink transitions
-            if "End Shrink" in trans_name:
-                relative_t = trans_t - start_t if start_t > 0 else 0
-                if relative_t < 0: continue
-                
-                # Clip if out of range in Zoomed Mode
-                if not self.show_projection and relative_t > len(history): continue
-                
-                tx = graph_x + relative_t * step_x
-                
-                # Draw vertical line
-                painter.drawLine(int(tx), graph_y, int(tx), graph_y + graph_h)
-                
-                # Draw label at top
-                label = "D2" if "Day 2" in trans_name else "D3"
-                painter.setPen(QColor(255, 215, 0, 200))  # Gold color
-                painter.drawText(int(tx) - 10, graph_y - 5, label)
-                painter.setPen(QPen(QColor(255, 255, 255, 100), 2, Qt.PenStyle.DashLine))  # Reset pen
+        # --- DAY TRANSITION VERTICAL BARS (Merged into Events Loop) ---
+        # The separate transitions loop is removed in favor of the unified 'events' loop below.
 
         # --- MARKERS ---
         start_t = self.stats.get("graph_start_time", 0)
         if start_t > 0 and len(history) > 0:
+             # Debug: Log event count
+             shrink_events = [e for e in events if e.get("type") == "SHRINK"]
+             
              for evt in events:
                  t_evt = evt.get("t", 0)
                  bg_type = evt.get("type", "")
+                 details = evt.get("details", "")
                  
                  relative_t = t_evt - start_t
-                 if relative_t < 0: continue
+                 if relative_t < 0: 
+                     continue
                  
                  # Clip if out of range in Zoomed Mode
-                 if not self.show_projection and relative_t > len(history): continue
+                 # Relaxed check: Allow 5s buffer to prevent race conditions with history appending
+                 if not self.show_projection and relative_t > (len(history) + 5): 
+                     continue
                  
                  px = graph_x + relative_t * step_x
                  
-                 icon = "❓"
+                 icon = ""
                  if bg_type == "DEATH": icon = "💀"
                  elif bg_type == "RECOVERY": icon = "♻️"
                  elif bg_type == "BOSS": icon = "⚔️"
                  
-                 painter.drawText(int(px) - 6, int(graph_y + graph_h) - 10, icon)
+                 if icon:
+                     painter.drawText(int(px) - 6, int(graph_y + graph_h) - 10, icon)
+                 
+                 if bg_type == "SHRINK":
+                     # Draw Vertical Line for Shrink (40% opacity, no label)
+                     painter.setPen(QPen(QColor(255, 255, 255, 102), 2, Qt.PenStyle.SolidLine))
+                     painter.drawLine(int(px), graph_y, int(px), graph_y + graph_h)
                  
         # --- SHORTCUTS FOOTER (User Request) ---
         # --- SHORTCUTS REMOVED PER USER REQUEST ---

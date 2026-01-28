@@ -27,6 +27,8 @@ class VisionService(IVisionService):
 
     def start_capture(self) -> None:
         if self.engine:
+            self.engine.set_level_callback(self._level_multicast_callback)
+            self.engine.set_runes_callback(self._runes_multicast_callback)
             self.engine.start_monitoring(self._multicast_callback)
 
     def stop_capture(self) -> None:
@@ -77,14 +79,6 @@ class VisionService(IVisionService):
         if self.engine:
             self.engine.set_ocr_param(category, key, value)
 
-    def set_region(self, category: str, rect: dict) -> None:
-        if not self.engine: return
-        if category.lower() == "level":
-            self.engine.update_level_region(rect)
-        elif category.lower() == "runes":
-            self.engine.update_runes_region(rect)
-        elif category.lower() == "monitor":
-            self.engine.update_region(rect)
 
     def capture_training_sample(self, category: str) -> None:
         if self.engine:
@@ -112,6 +106,11 @@ class VisionService(IVisionService):
     def request_runes_burst(self) -> List[int]:
         if self.engine:
             return self.engine.request_runes_burst()
+        return []
+
+    def request_level_burst(self) -> List[int]:
+        if self.engine:
+            return self.engine.request_level_burst()
         return []
 
     def set_scan_delay(self, delay: float) -> None:
@@ -162,23 +161,6 @@ class VisionService(IVisionService):
             for observer in self.runes_observers:
                 observer(runes, confidence)
             
-    def start_capture(self) -> None:
-        if self.engine:
-            self.engine.set_level_callback(self._level_multicast_callback)
-            self.engine.set_runes_callback(self._runes_multicast_callback)
-            self.engine.start_monitoring(self._multicast_callback)
-
-    def set_ocr_param(self, category: str, key: str, value: object) -> None:
-        if self.engine:
-            # Ensure category exists
-            if category not in self.engine.ocr_params:
-                self.engine.ocr_params[category] = {}
-                
-            self.engine.ocr_params[category][key] = value
-            # Update Config
-            # Note: Ideally we should use config_service to persist, but direct access for now is fine
-            # casting params to dict if needed?
-            pass
 
     def set_region_tuner(self, profile: str, rect: tuple) -> None:
         """Called by OCR Tuner to update specific regions."""
@@ -208,6 +190,9 @@ class VisionService(IVisionService):
 
     def set_tuning_active(self, active: bool) -> None:
         """Notifies observers that tuning (OCR Tuner) is active/inactive."""
+        if self.engine:
+            self.engine.set_tuning_mode(active)
+            
         if hasattr(self, 'tuning_observers'):
             for observer in self.tuning_observers:
                 observer(active)

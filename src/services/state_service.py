@@ -270,12 +270,13 @@ class StateService(IStateService):
                 # F8: Boss Skip / Correction
                 _bind('f8', self.skip_to_boss, "BOSS_SKIP")
                 
-                _bind('f9', lambda: self.tuner_callback() if self.tuner_callback else None, "OPEN_TUNER")
+                _bind('f9', self.on_f9_pressed, "OPEN_TUNER")
+                # F9 Backup (just in case)
+                _bind('shift+f9', self.on_f9_pressed, "OPEN_TUNER_BACKUP")
+
                 # F10: Quit (Must be scheduled on Main Thread to avoid crash)
                 _bind('f10', lambda: self.overlay.schedule(0, self.tray.quit_app) if self.tray else os._exit(0), "QUIT")
                 
-            except Exception as e:
-                logger.error(f"Failed to register hotkeys: {e}")
             except Exception as e:
                 logger.error(f"Failed to register hotkeys: {e}")
 
@@ -297,6 +298,16 @@ class StateService(IStateService):
         
         self.current_phase = phase_name
         self.session_log = []
+        
+        # Clear History for New Session
+        self.session.run_accumulated_history = []
+        self.run_accumulated_raw = []
+        self.session.graph_events = []
+        self.session.ui_transitions = []
+        self.spent_at_merchants = 0
+        self.session.death_count = 0
+        self.session.recovery_count = 0
+        
         self.log_dir = os.path.join(os.getcwd(), "data", "logs")
         os.makedirs(self.log_dir, exist_ok=True)
         
@@ -310,6 +321,7 @@ class StateService(IStateService):
         self.graph_log_file = os.path.join(self.log_dir, self.graph_log_filename)
         self.graph_log_data = []
         self.last_graph_save = time.time()
+        self.graph_start_time = time.time() # Fix: Mark start of graph for marker calculation
         
         self.log_session_event("SESSION_STARTED", {
             "run_count": self.session_count,
@@ -336,7 +348,15 @@ class StateService(IStateService):
         self.session.total_runes_spent = 0
         self.session.death_count = 0
         self.session.recovery_count = 0
-        self.session.runes_at_death = 0
+        self.session.lost_runes_pending = 0
+        self.spent_at_merchants = 0
+        
+        # Clear History
+        self.session.run_accumulated_history = []
+        self.run_accumulated_raw = []
+        self.session.graph_events = []
+        self.session.day_transition_markers = []
+        self.session.ui_transitions = []
         
         # Reset phase tracking
         self.current_phase = "Waiting"
@@ -606,13 +626,8 @@ class StateService(IStateService):
                     remaining = max(0, phase["duration"] - elapsed)
                     remaining_int = int(remaining)
                     
-                    # Phase Auto Advance
-                    if remaining == 0:
-                        self.session.phase_index += 1
-                        self.session.start_time = time.time()
-                        self._update_day_ocr_state()
-                        self._check_rps_pause()
-                        return
+                    # NOTE: Auto-advance is now handled later (line ~771) via Trigger()
+                    # This ensures SHRINK events are properly created when leaving shrinking phases
 
                     # --- RPS & GRAPH UPDATE (1Hz) ---
                     if time.time() - self.last_rps_update >= 1.0:
@@ -663,14 +678,22 @@ class StateService(IStateService):
                                 
                                 # Check if we have valid reasons to drop
                                 is_valid_drop_reason = (self.pending_spending_event is not None)
-                                # Note: Death resets are handled by graph reset or event, but here we just check if
-                                # the current calc is allowed to be lower.
+                                
+                                # Check if a death just occurred (within last 5 seconds)
+                                is_recent_death = False
+                                if self.session.graph_events:
+                                    for evt in reversed(self.session.graph_events[-10:]):  # Check last 10 events
+                                        if evt.get("type") == "DEATH":
+                                            time_since_death = now - evt.get("t", 0)
+                                            if time_since_death < 5.0:  # Death within last 5 seconds
+                                                is_recent_death = True
+                                                break
                                 
                                 # Validate using Logic Class
                                 total_accumulated = GameRules.validate_graph_monotonicity(
                                     current_calc, 
                                     self.last_valid_total_runes,
-                                    is_death=False, # Death handled separately
+                                    is_death=is_recent_death,  # Now properly detects deaths
                                     is_spending=is_valid_drop_reason
                                 )
                                 
@@ -740,27 +763,37 @@ class StateService(IStateService):
                     timer_str = f"{mins:02}:{secs:02}"
                     
                     # AUTO-ADVANCE: When timer expires, move to next phase
+                    phase_just_changed = False
                     if remaining <= 0 and phase["duration"] > 0:
                         next_idx = self.session.phase_index + 1
                         if next_idx < len(self.phases):
                             logger.info(f"Timer expired. Auto-advancing from phase {self.session.phase_index} to {next_idx}")
                             self.Trigger(next_idx)
+                            logger.info(f"✅ Trigger() completed. New phase_index={self.session.phase_index}")
                             # Reset timer for new phase
                             self.session.start_time = time.time()
+                            phase_just_changed = True
+                            # CRITICAL: Reload phase variable after Trigger() changed phase_index
+                            phase = self.phases[self.session.phase_index]
+                            elapsed = time.time() - self.session.start_time
+                            remaining = max(0, phase["duration"] - elapsed)
+                            remaining_int = int(remaining)
+                            logger.info(f"✅ Phase reloaded: {phase['name']}, duration={phase['duration']}s, remaining={remaining:.1f}s")
                     
-                    # Audio Announcements
-                    if remaining_int != self.last_announcement_second:
+                    # Audio Announcements (only if NOT auto-advancing)
+                    if not phase_just_changed and remaining_int != self.last_announcement_second:
                         is_storm = "Storm" in phase["name"]
                         if is_storm:
                             if remaining_int == 120: self.audio.announce("Fermeture de la zone dans 2 minutes")
                             elif remaining_int == 60: self.audio.announce("Fermeture de la zone dans 1 minute")
                             elif remaining_int == 30: self.audio.announce("Dans 30 secondes")
                             elif remaining_int == 5: self.audio.announce("5 secondes")
-                            elif remaining_int == 0: self.audio.announce("La zone se referme")
+                            # Note: remaining_int == 0 case removed - handled by phase transition
                         self.last_announcement_second = remaining_int
                     
                     # Check for Phase Start Announcement
                     if self.session.phase_index != self.last_announced_phase:
+                        logger.info(f"🔊 Phase start announcement check: phase={phase['name']}, is_storm={'Storm' in phase['name']}, phase_idx={self.session.phase_index}")
                         # Skip announcement for the very first phase (Day 1 - Storm) to avoid spam on startup
                         if "Storm" in phase["name"] and self.session.phase_index != 0:
                              d_min = phase["duration"] // 60
@@ -768,8 +801,10 @@ class StateService(IStateService):
                              msg = "La zone se refermera dans "
                              if d_min > 0: msg += f"{d_min} minutes "
                              if d_sec > 0: msg += f"{d_sec} secondes"
+                             logger.info(f"🔊 Announcing: {msg}")
                              self.audio.announce(msg)
                         self.last_announced_phase = self.session.phase_index
+                        logger.info(f"✅ Phase start announcement complete")
                 else:
                     # Stopwatch
                     mins = int(elapsed // 60)
@@ -883,6 +918,8 @@ class StateService(IStateService):
              logger.info("StateService: Logic PAUSED (Tuner Active)")
         else:
              logger.info("StateService: Logic RESUMED")
+             # Restore proper OCR state (in case Tuner forced it open)
+             self._update_day_ocr_state()
 
     def on_ocr_result(self, text, width, offset, word_data, brightness=0, score=0):
         if self.logic_paused: return
@@ -1057,7 +1094,9 @@ class StateService(IStateService):
         final_decision = None
         if day_counts["DAY 3"] >= 2 and day_scores["DAY 3"] > 100:
             final_decision = "DAY 3"
-        elif day_counts["DAY 2"] >= 2 and day_scores["DAY 2"] > 180:
+        # HARDENED: Day 2 now requires 3 detections (was 2) and score > 240 (was 180)
+        # This prevents false positives from low-confidence OCR (e.g., 75% conf "JOUR II")
+        elif day_counts["DAY 2"] >= 3 and day_scores["DAY 2"] > 240:
             final_decision = "DAY 2"
         # Day 1 Reset: Require Temporal Persistence and High Score
         else:
@@ -1219,6 +1258,9 @@ class StateService(IStateService):
         logger.info("Run reset complete")
 
     def on_level_detected(self, level: int, confidence: float = 100.0):
+        # Pause logic if tuner is active
+        if self.logic_paused: return
+        
         # Valid range check (assuming max level 713)
         if level < 1 or level > 713: return
         
@@ -1246,10 +1288,38 @@ class StateService(IStateService):
             self.session._current_run_level = 1  # Set BEFORE freezing
             self.session.stats_frozen = True
             # Emit event
-            bus.publish(EarlyGameDetectedEvent())
+            bus.publish(EarlyGameDetectedEvent(level=1))
             
         # Check against dynamic requirement for standard updates
         if self.level_consensus_count >= required_consensus:
+            # --- BURST VERIFICATION (Premium Reliability) ---
+            # If a change is suspected, we trigger a high-speed burst to confirm.
+            if level != self.session.current_run_level:
+                # Check for Hidden HUD (Low Confidence / Junk Read)
+                is_hud_hidden = (confidence < 40.0) or (level == 0)
+                
+                if is_hud_hidden:
+                    # If HUD is hidden, we keep the PREVIOUS level to ensure
+                    # Level-up indicators STAY visible at the last known position.
+                    if self.config.get("debug_mode") and self.frame_count % 60 == 0:
+                        logger.info(f"Level Change {self.session.current_run_level}→{level} deferred: HUD Hidden (Conf: {confidence:.1f})")
+                    return
+                    
+                # Trigger Burst
+                burst = self.vision.request_level_burst()
+                if burst:
+                    from collections import Counter
+                    counts = Counter(burst)
+                    most_common, freq = counts.most_common(1)[0]
+                    
+                    if freq < 3:
+                        if self.config.get("debug_mode"):
+                            logger.info(f"Level Burst Failed: Inconsistent results {burst}. Waiting...")
+                        return
+                    
+                    # Normalize to burst consensus
+                    level = most_common
+
             # Only update if changed (or first time after init)
             if level != self.session.current_run_level:
                 # If run is NOT active, just update UI and exit to prevent logging/side-effects
@@ -1402,7 +1472,7 @@ class StateService(IStateService):
                     self.death_history.append(death_event)
                     self.log_session_event("DEATH", death_event)
                     self._ignore_next_rune_drop = True 
-                    self.session.graph_events.append({"t": time.time(), "type": "DEATH"})
+                    self.session.graph_events.append({"t": len(self.session.run_accumulated_history), "type": "DEATH"})
                 
                 # --- LEVEL UP LOGIC ---
                 elif level > old_level:
@@ -1462,6 +1532,8 @@ class StateService(IStateService):
                 self.level_consensus_count = 0 
 
     def on_runes_detected(self, runes: int, confidence: float = 100.0):
+        if self.logic_paused: return
+        
         # Update internal state (Always active for UI)
         self.last_runes_reading = runes
         
@@ -1659,7 +1731,7 @@ class StateService(IStateService):
                     if is_recovery:
                         self.session.recovery_count += 1 
                         self.log_session_event("RUNE_RECOVERY", {"recovered": self.lost_runes_pending})
-                        self.session.graph_events.append({"t": time.time(), "type": "RECOVERY"})
+                        self.session.graph_events.append({"t": len(self.session.run_accumulated_history), "type": "RECOVERY"})
                         if self.config.get("debug_mode"):
                             logger.info(f"DEBUG_RUNES [ACTION]: RECOVERY DETECTED (+{self.lost_runes_pending})")
                         self.lost_runes_pending = 0 
@@ -1929,12 +2001,17 @@ class StateService(IStateService):
                 self.trigger_day_3()
 
     def Trigger(self, index):
-        print(f"DEBUG_TRACE: Trigger({index}) Called")
-        if index < -1 or index >= len(self.phases): return
+        logger.info(f"🔵 DEBUG: Trigger({index}) called. Current phase_index={getattr(self.session, 'phase_index', 'NONE')}")
+        if index < -1 or index >= len(self.phases): 
+            logger.info(f"🔵 DEBUG: Trigger({index}) rejected - out of bounds")
+            return
         
         # --- GRAPH MARKER LOGIC (End Shrink Detection) ---
         # We record the transition WHEN LEAVING a Shrinking Phase
-        current_idx = self.session.phase_index
+        # Check the CURRENT phase (before updating to the new one)
+        current_idx = self.session.phase_index if hasattr(self.session, 'phase_index') else -1
+        logger.info(f"🔵 DEBUG: current_idx={current_idx}, checking shrink_map")
+        
         shrink_map = {
             1: "End Shrink 1.1", # Leaving Day 1 - Shrinking
             3: "End Shrink 1.2", # Leaving Day 1 - Shrinking 2
@@ -1942,11 +2019,23 @@ class StateService(IStateService):
             8: "End Shrink 2.2"  # Leaving Day 2 - Shrinking 2
         }
         
+        # If we're currently IN a shrinking phase and about to leave it
         if current_idx in shrink_map:
+             logger.info(f"🔵 DEBUG: MATCH! current_idx={current_idx} is in shrink_map, creating event...")
              t_name = shrink_map[current_idx]
-             self.session.ui_transitions.append({"name": t_name, "t": time.time()})
+             # Log as standard Graph Event (Type: SHRINK)
+             # This uses the exact same pipeline as Deaths/Recoveries
+             self.session.graph_events.append({
+                 "t": len(self.session.run_accumulated_history),
+                 "type": "SHRINK",
+                 "details": t_name
+             })
+             # Always log SHRINK events for debugging
+             logger.info(f"🔵 SHRINK EVENT CREATED: {t_name} at t={time.time():.1f} (Total events: {len(self.session.graph_events)})")
              if self.config.get("debug_mode"):
                  logger.info(f"Graph Marker Added: {t_name}")
+        else:
+             logger.info(f"🔵 DEBUG: NO MATCH. current_idx={current_idx} not in shrink_map {list(shrink_map.keys())}")
 
         self.session.timer_frozen = False
         self.session.phase_index = index
@@ -2022,7 +2111,7 @@ class StateService(IStateService):
         self.run_accumulated_raw = []
         self.session.graph_events = []
         self.graph_log_data = []
-        self.graph_start_time = time.time() 
+        self.graph_start_time = 0 
         self.session.day_transition_markers = []
         self.last_calculated_delta = 0
         
@@ -2322,7 +2411,7 @@ class StateService(IStateService):
             }
         self.death_history.append(death_event)
         self.log_session_event("DEATH", death_event)
-        self.session.graph_events.append({"t": time.time(), "type": "DEATH"})
+        self.session.graph_events.append({"t": len(self.session.run_accumulated_history), "type": "DEATH"})
         
         # 3. Graph Repair (Similar to standard death)
         # We need to subtract the loss from 'last_valid_total_runes' 
@@ -2377,5 +2466,19 @@ class StateService(IStateService):
                 self.start_new_session("GAME INIT")
                 self.session_start_time = 0 # Hold at 0 until Day 1 triggers
                 self.session_active = False # Wait for Day 1 msg
+
+    def on_f9_pressed(self):
+        """Handle F9 hotkey to open settings window."""
+        logger.info(f"F9 Pressed. Callback registered: {self.tuner_callback is not None}")
+        # Audio confirmation (Standard F9 Beep)
+        try:
+            winsound.Beep(880, 150) # High-pitched beep
+        except:
+            pass
+            
+        if self.tuner_callback:
+            self.tuner_callback()
+        else:
+            logger.warning("F9 pressed but tuner_callback is not set.")
 
 

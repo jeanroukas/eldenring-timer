@@ -2,6 +2,7 @@ import sys
 import argparse
 import ctypes
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
 from src.service_container import ServiceContainer
 from src.services.base_service import IConfigService, IVisionService, IOverlayService, IStateService, IDatabaseService, ITrayService, IAudioService
 from src.services.config_service import ConfigService
@@ -12,7 +13,6 @@ from src.services.database_service import DatabaseService
 from src.services.tray_service import TrayService
 from src.services.audio_service import AudioService
 from src.ui.region_selector import RegionSelector
-from src.ui.settings_window import SettingsWindow
 
 from src.ui.state_inspector import StateInspectorWindow
 from src.ui.debug_overlay import DebugOverlayManager
@@ -159,15 +159,27 @@ class Launcher:
         sys.exit(self.app.exec())
 
     def show_config_ui(self):
-        self.config_service.initialize() # Load config
-        self.db_service.initialize() # Load DB for stats
-        self.settings = SettingsWindow(self.config_service, self.db_service, self.audio_service)
+        # Initialize services if purely config mode (CLI)
+        if not self.container.services_initialized:
+             self.container.initialize_all()
+        
+        # Instantiate if missing (CLI mode)
+        if not hasattr(self, 'settings'):
+             self.settings = OCRTunerWindow(self.vision_service, self.config_service, self.db_service, self.audio_service, state_service=self.state_service)
+             self._connect_tuner_signals()
+
+        self.settings.show()
+        self.settings.setWindowState(self.settings.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)
+        self.settings.raise_()
+        self.settings.activateWindow()
+
+    def _connect_tuner_signals(self):
+        # Connect Capture Buttons from Tuner to Main Logic
         self.settings.btn_select_region.clicked.connect(self.select_region)
         self.settings.btn_select_level_region.clicked.connect(self.select_level_region)
         self.settings.btn_select_runes_region.clicked.connect(self.select_runes_region)
         self.settings.btn_select_runes_icon_region.clicked.connect(self.select_runes_icon_region)
         self.settings.btn_select_char_region.clicked.connect(self.select_char_region)
-        self.settings.show()
 
     def show_inspector_ui(self):
         if not hasattr(self, 'inspector_window') or self.inspector_window is None:
@@ -201,40 +213,37 @@ class Launcher:
         self.selector = RegionSelector()
         self.selector.region_selected.connect(self.on_char_region_selected)
         self.selector.show()
-        
-        
     def on_region_selected(self, region):
         self.config_service.set("monitor_region", region)
         self.vision_service.set_region(region)
         print(f"Region saved: {region}")
         # Bring settings back to front if needed
-        self.settings.raise_()
+        if hasattr(self, 'settings'): self.settings.raise_()
 
     def on_level_region_selected(self, region):
         self.config_service.set("level_region", region)
         self.vision_service.set_level_region(region)
         print(f"Level Region saved: {region}")
-        self.settings.raise_()
         # Bring settings back to front if needed
-        self.settings.raise_()
+        if hasattr(self, 'settings'): self.settings.raise_()
 
     def on_runes_region_selected(self, region):
         self.config_service.set("runes_region", region)
         self.vision_service.set_runes_region(region)
         print(f"Runes Region saved: {region}")
-        self.settings.raise_()
+        if hasattr(self, 'settings'): self.settings.raise_()
 
     def on_runes_icon_region_selected(self, region):
         self.config_service.set("runes_icon_region", region)
         self.vision_service.set_runes_icon_region(region)
         print(f"Runes Icon Region saved: {region}")
-        self.settings.raise_()
+        if hasattr(self, 'settings'): self.settings.raise_()
 
     def on_char_region_selected(self, region):
         self.config_service.set("char_region", region)
         # self.vision_service.set_char_region(region) # Future implementation
         print(f"Character Region saved: {region}")
-        self.settings.raise_()
+        if hasattr(self, 'settings'): self.settings.raise_()
 
 
     def start_application(self):
@@ -245,12 +254,16 @@ class Launcher:
         self.debug_manager = DebugOverlayManager(self.config_service)
         self.vision_service.set_debug_callback(self.debug_manager.update)
         
-        # Show Tuner
-        self.tuner_window = OCRTunerWindow(self.vision_service)
-        # self.tuner_window.show()  # Disabled auto-open at startup
+        # Show Tuner (Unified Settings)
+        self.settings = OCRTunerWindow(self.vision_service, self.config_service, self.db_service, self.audio_service, state_service=self.state_service)
+        self._connect_tuner_signals()
         
-        # Connect Hotkey to Tuner
-        self.state_service.tuner_callback = lambda: self.overlay_service.schedule(0, self.tuner_window.show)
+        # Connect Hotkey to Settings (F9)
+        def _f9_cb():
+            print("[DEBUG] F9 Callback Triggered in Main")
+            self.overlay_service.schedule(0, self.show_config_ui)
+            
+        self.state_service.tuner_callback = _f9_cb
 
 
 if __name__ == "__main__":

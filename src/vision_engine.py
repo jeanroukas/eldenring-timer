@@ -80,6 +80,8 @@ class VisionEngine:
         self.base_scan_delay = 0.033 # 30 FPS target
         self.power_save_delay = 0.2  # 5 FPS
         
+        self.tuning_mode = False # Force OCR active during tuning
+        
         # Parallel OCR Pool
         self.executor = ThreadPoolExecutor(max_workers=3)
         self.tess_pool_main = []
@@ -444,22 +446,26 @@ class VisionEngine:
             print(f"Vision Engine: Failed to get monitors: {e}")
             return []
 
-    def set_debug_callback(self, callback):
-        """Sets the callback for real-time debug UI updates."""
-        self.debug_callback = callback
-        
-    def set_debug_image_callback(self, callback):
-        """Sets the callback for real-time binary image preview."""
-        self.debug_image_callback = callback
         
     def set_ocr_param(self, category: str, key: str, value: float):
         """Updates internal OCR parameters dynamically for a specific category."""
-        if category in self.ocr_params and key in self.ocr_params[category]:
+        if category in self.ocr_params:
             # Type safety
-            if key in ["thresh", "dilate", "padding"]:
-                self.ocr_params[category][key] = int(value)
+            if key in ["thresh", "dilate", "padding", "psm"]:
+                try:
+                    self.ocr_params[category][key] = int(value)
+                except:
+                    self.ocr_params[category][key] = value # Fallback
+            elif key in ["mode"]:
+                 self.ocr_params[category][key] = str(value)
+            elif key in ["scale", "gamma"]:
+                 try:
+                    self.ocr_params[category][key] = float(value)
+                 except:
+                    self.ocr_params[category][key] = value
             else:
-                self.ocr_params[category][key] = float(value)
+                 # Generic fallback
+                 self.ocr_params[category][key] = value
             
             if self.debug_mode:
                 print(f"VISION TUNER ({category}): Set {key} = {self.ocr_params[category][key]}")
@@ -570,6 +576,10 @@ class VisionEngine:
             if self.debug_mode:
                 print(f"DEBUG Victory: Best fuzzy match '{best_pattern}' score={best_score:.1f} (normalized='{normalized_no_accents}')")
             
+            # Trigger Debug Overlay for Reward
+            if self.debug_callback:
+                self.debug_callback("Reward", text if text else "---", best_score)
+
             # Lower threshold for victory detection (60 instead of 65)
             # because "RÉSULTAT" vs "RESULTAT" should match (score=100)
             if best_score >= 60:
@@ -586,6 +596,14 @@ class VisionEngine:
         finally:
             # Restore old override
             self.region_override = old_override
+
+    def set_tuning_mode(self, active: bool):
+        self.tuning_mode = active
+        if active:
+            # Force enable OCR immediately for visual feedback
+            self.day_ocr_enabled = True 
+            if self.debug_mode:
+                print("Vision Engine: Tuning Mode ACTIVE (Forced Day OCR)")
 
     def start_monitoring(self, callback):
         if self.running: return
@@ -1043,6 +1061,40 @@ class VisionEngine:
              logger.error(traceback.format_exc())
 
 
+    def request_level_burst(self) -> List[int]:
+        """
+        Performs 5 high-speed scans of the level region to find a consensus.
+        """
+        results = []
+        if not self.level_region: return results
+        
+        reg = self.level_region
+        left, top = reg.get('left', 0), reg.get('top', 0)
+        width, height = reg.get('width', 150), reg.get('height', 40)
+        monitor = {"top": top, "left": left, "width": width, "height": height}
+
+        for _ in range(5):
+            try:
+                # Capture Optimized (MSS)
+                sct_img = self.sct.grab(monitor)
+                img = np.array(sct_img)
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                
+                # Preprocess (Fast path using numeric helper logic essence)
+                scaled = cv2.resize(img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
+                gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+                gamma_adj = self.adjust_gamma(gray, gamma=0.6)
+                _, thresh = cv2.threshold(gamma_adj, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                
+                if self.tess_api_secondary:
+                    text, _ = self.tess_api_secondary.get_text(thresh)
+                    if text and text.isdigit():
+                        results.append(int(text))
+            except Exception as e:
+                if self.config.get("debug_mode"): 
+                    print(f"Level Burst scan error: {e}")
+            
+        return results
 
     def request_runes_burst(self) -> List[int]:
         """
@@ -1081,8 +1133,8 @@ class VisionEngine:
             
         return results
 
-    def _ocr_pass_worker_pyt(self, img: np.ndarray, gray_preview: np.ndarray, p_config: Dict[str, Any]):
-        """Runs a single OCR pass using Pytesseract on another thread."""
+    def _ocr_pass_worker_dll(self, img: np.ndarray, gray_preview: np.ndarray, p_config: Dict[str, Any], tess_api: TesseractAPI):
+        """Runs a single OCR pass using the allocated Tesseract DLL API instance."""
         try:
             processed = self.preprocess_image(img, pass_type=p_config["type"], 
                                               custom_val=p_config["val"], 
@@ -1091,59 +1143,31 @@ class VisionEngine:
                                               input_gray=gray_preview if p_config["scale"] == 1.0 else None)
             if processed is None: return None
             
-            # --- DEBUG PREVIEW (For OCR Tuner) ---
-            # Show the processed image EXACTLY as Tesseract will see it
-            if "debug_callback" in p_config:
-                 p_config["debug_callback"]("Day", processed, 0.0)
+            # --- PADDING (Add Border) ---
+            # MOVED BEFORE DEBUG CALLBACK so visualizer sees exactly what OCR sees
+            padding = int(p_config.get("padding", 0))
+            if padding > 0:
+                # Add white border
+                processed = cv2.copyMakeBorder(processed, padding, padding, padding, padding, cv2.BORDER_CONSTANT, value=255)
 
-            # --- SAFETY CHECK: Prevent Tesseract "Image too small" errors ---
-            coords = cv2.findNonZero(processed)
-            if coords is None: return None
-            x, y, w, h = cv2.boundingRect(coords)
+            # --- EXECUTE OCR (DLL) ---
+            text, conf = tess_api.get_text(processed)
+            text = text.strip()
+
+            # --- DEBUG PREVIEW (For OCR Tuner) ---
+            if "debug_callback" in p_config:
+                 p_config["debug_callback"]("Day", processed, conf)
             
-            pil_img = Image.fromarray(processed)
-            text = pytesseract.image_to_string(pil_img, config='--psm 6').strip()
-            # Pytesseract doesn't provide confidence easily in image_to_string
-            # We assign a default good confidence if text found
-            return {"text": text, "conf": 75 if text else 0, "width": w}
+            h, w = processed.shape[:2]
+            return {"text": text, "conf": conf, "width": w}
         except Exception as e:
             if self.config.get("debug_mode"):
-                print(f"Pyt-Worker Error: {e}")
+                print(f"DLL-Worker Error: {e}")
             return None
-        """Runs a single OCR pass on a background thread."""
-        try:
-            processed = self.preprocess_image(img, pass_type=p_config["type"], 
-                                              custom_val=p_config["val"], 
-                                              scale=p_config["scale"],
-                                              gamma=p_config.get("gamma", 1.0),
-                                              input_gray=gray_preview if p_config["scale"] == 1.0 else None)
-            if processed is None: return None
 
-            # --- SAFETY CHECK: Prevent Tesseract "Image too small" errors ---
-            coords = cv2.findNonZero(processed)
-            if coords is None: return None
-            _, _, w, h = cv2.boundingRect(coords)
-            # Filter out noise (dots/lines < 10px wide) which causes Tesseract to complain
-            if w < 10 or h < 8: return None 
-            # ----------------------------------------------------------------
-
-            text, avg_conf = engine.get_text(processed)
-            cleaned = self.clean_text(text)
-            cleaned = self.CORRECTION_MAP.get(cleaned, cleaned)
-            
-            if not cleaned: return None
-            
-            return {
-                "text": cleaned,
-                "conf": avg_conf,
-                "width": processed.shape[1]
-            }
-        except Exception as e:
-            if self.debug_mode: print(f"OCR Pass Worker Error: {e}")
-            return None
 
     def _perform_full_ocr_cycle(self, img: np.ndarray, gray_preview: np.ndarray):
-        """Internal helper for a complete OCR run (all passes in PARALLEL)."""
+        """Internal helper for a complete OCR run (all passes in PARALLEL using DLL)."""
         best_text = ""
         best_val = 0.0
         best_width = 0
@@ -1166,7 +1190,6 @@ class VisionEngine:
         passes = []
         if mean_brightness < 70:
             # DARK IMAGE: Use Otsu + Gamma 0.4 (or slightly modified base gamma)
-            # We respect the user's Scale choice, but force Otsu for dark scenes
             passes.append({"type": OCRPass.OTSU, "val": 0, "scale": base_scale, "gamma": 0.4})
         else:
             # BRIGHT/NORMAL IMAGE: Use Tuned Parameters
@@ -1175,24 +1198,39 @@ class VisionEngine:
             passes.append({"type": OCRPass.FIXED, "val": int(base_thresh), "scale": base_scale, "gamma": base_gamma})
             
             # Pass 2: Variant (Lower Thresh, Higher Gamma) - Auto-derived
-            # If user sets Thresh 180 -> Pass 2 is 150. If user sets 200 -> Pass 2 is 170.
             passes.append({"type": OCRPass.FIXED, "val": max(50, int(base_thresh) - 30), "scale": base_scale, "gamma": base_gamma + 0.2})
             
             # SPECIAL: Red channel extraction for Cyan/Blue banners
-            # Hardcoded mostly as it's specific physics, but using base scale logic if needed
-            # Scale 3.0x relative to base, Gamma 1.0 default, Thresh 120 default
             passes.append({"type": "RED", "val": 120, "scale": base_scale * 3.0, "gamma": 1.0})
+
+        # Inject Padding into all passes
+        padding_val = int(day_params.get("padding", 0))
+        for p in passes:
+            p["padding"] = padding_val
             
-        # Dispatch to ThreadPool
+        # Dispatch to ThreadPool (using pre-allocated DLL instances)
         futures = []
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            for idx, p_config in enumerate(passes):
+        
+        # We can only run as many parallel passes as we have API instances available
+        available_workers = len(self.tess_pool_main)
+        if available_workers == 0:
+            if self.debug_mode and self.frame_count % 60 == 0:
+                logger.error("No Tesseract DLL workers available for Day OCR!")
+            return "", 0.0, 0, False
+
+        num_passes = min(len(passes), available_workers)
+
+        with ThreadPoolExecutor(max_workers=num_passes) as executor:
+            for idx in range(num_passes):
+                p_config = passes[idx]
+                tess_inst = self.tess_pool_main[idx]
+                
                 # Inject Debug Callback into PRIMARY Pass (Index 0)
                 # This ensures the Tuner sees the image affected by the sliders
                 if idx == 0 and self.debug_image_callback:
                     p_config["debug_callback"] = self.debug_image_callback
                     
-                futures.append(executor.submit(self._ocr_pass_worker_pyt, img, gray_preview, p_config))
+                futures.append(executor.submit(self._ocr_pass_worker_dll, img, gray_preview, p_config, tess_inst))
 
             # Collect results
             for future in futures:
@@ -1205,15 +1243,21 @@ class VisionEngine:
                     if text:
                         if len(text) > 2: found = True
                         
-                        # Logic to keep best result (longest text or highest conf?)
-                        if len(text) > len(best_text): # Prefer longer text
+                        # Logic to keep best result using CONFIDENCE (since we now have it!)
+                        # Previous logic favored length, then confidence.
+                        # Now with DLL, confidence is accurate (0-100).
+                        
+                        # Weight length heavily still because "JOUR II" (7 chars) is better than "JOUR" (4)
+                        # but "JOUR I" with 90% is better than "J0UR I...." with 40%
+                        
+                        score = (len(text) * 10) + conf 
+                        best_score = (len(best_text) * 10) + best_val
+                        
+                        if score > best_score:
                             best_text = text
                             best_val = conf
                             best_width = width
-                        elif len(text) == len(best_text) and conf > best_val:
-                            best_text = text
-                            best_val = conf
-                            best_width = width
+                            
                 except Exception as e:
                     if self.config.get("debug_mode"):
                         logger.error(f"OCR Future Error: {e}")
@@ -1248,14 +1292,14 @@ class VisionEngine:
         while self.running:
             try:
                 # OPTIMIZATION: If Main Menu is detected by secondary thread, SKIP Day OCR loop.
-                if self.is_in_menu_state:
+                if self.is_in_menu_state and not self.tuning_mode:
                     time.sleep(0.5)
                     continue
 
                 loop_start = time.perf_counter()
                 
                 # 1. Cooldown Check (Global Pause)
-                if time.time() < self.suppress_ocr_until:
+                if time.time() < self.suppress_ocr_until and not self.tuning_mode:
                     time.sleep(1.0) 
                     continue
                 
@@ -1295,7 +1339,7 @@ class VisionEngine:
                 dm = self.debug_mode
                 
                 best_text, best_conf, best_width, found_valid_text = "", 0.0, 0, False
-                if self.day_ocr_enabled:
+                if self.day_ocr_enabled or self.tuning_mode:
                     # Run OCR checks
                     best_text, best_conf, best_width, found_valid_text = self._perform_full_ocr_cycle(img, gray_preview)
                 
@@ -1324,17 +1368,28 @@ class VisionEngine:
                     # Burst if Day detected
                     if "JOUR" in best_text or "RESULTAT" in best_text:
                         self._day_burst(callback, brightness)
-                        
-                    # Store for Debug Inspector
-                    self.last_ocr_text = best_text
-                    self.last_ocr_conf = best_conf
-                    self.last_brightness = brightness
-                    
-                    if self.debug_callback:
-                         self.debug_callback("Zone", best_text, best_conf)
+                
+                # Store for Debug Inspector
+                self.last_ocr_text = best_text
+                self.last_ocr_conf = best_conf
+                self.last_brightness = brightness
+                
+                # UPDATE DEBUG OVERLAY
+                # Only update if we actually ran the OCR or if we want to report "Searching..."
+                # If OCR is disabled, we DON'T update, allowing the overlay LED to timeout (Gray).
+                if (self.day_ocr_enabled or self.tuning_mode) and self.debug_callback:
+                        self.debug_callback("Zone", best_text, best_conf)
 
-                    # Standard Callback
-                    callback(best_text, best_width, best_center_offset, best_word_data, brightness, best_conf)
+                # Standard Callback (only if not garbage, or maybe always?)
+                # If we send garbage to StateService, it might process it as 'nothing found' which is fine
+                # But existing logic put it in else. Let's keep callback in else if we want compatibility?
+                # Actually, StateService usually handles empty text fine.
+                # But 'consecutive_garbage_frames > 5' is a throttle. 
+                # Let's keep callback throttled to avoid spamming StateService in low power mode,
+                # BUT we want to update Overlay. 
+                
+                if self.consecutive_garbage_frames <= 5 or activity_detected:
+                     callback(best_text, best_width, best_center_offset, best_word_data, brightness, best_conf)
                 
                 # Adaptive FPS Logic
                 now_ts = time.time()
@@ -1389,7 +1444,7 @@ class VisionEngine:
                      # Check Icon Visibility first
                      is_icon_visible, icon_conf = self.detect_rune_icon(self.last_raw_frame)
                      
-                     if is_icon_visible:
+                     if is_icon_visible or self.tuning_mode:
                          if current_sec % 5 == 0: logger.info(f"DEBUG: Icon Visible (Conf: {icon_conf:.2f}) -> Skipped Menu")
                          # ICON VISIBLE: Game Interface Active -> Not Menu
                          self.is_in_menu_state = False
@@ -1409,16 +1464,20 @@ class VisionEngine:
                                 found_menu, menu_conf = self.detect_menu_screen()
                                 if current_sec % 5 == 0: logger.info(f"DEBUG: Menu Check: {found_menu} (Conf: {menu_conf:.2f})")
                                 
+                                # Update Debug LED for Menu
+                                if self.debug_callback:
+                                    self.debug_callback("Menu", "Found" if found_menu else "Hidden", menu_conf * 100)
+                                
                                 if found_menu:
-                                     # Throttle: Only run burst check every 2 seconds
-                                     now = time.time()
-                                     if now - self.last_menu_check_time > 2.0:
-                                         self.last_menu_check_time = now
-                                         self._process_menu_detection() 
-                                     
-                                     self.is_in_menu_state = True
+                                    # Throttle: Only run burst check every 2 seconds
+                                    now = time.time()
+                                    if now - self.last_menu_check_time > 2.0:
+                                        self.last_menu_check_time = now
+                                        self._process_menu_detection() 
+                                    
+                                    self.is_in_menu_state = True
                                 else:
-                                     self.is_in_menu_state = False
+                                    self.is_in_menu_state = False
                             except Exception as e:
                                  if self.config.get("debug_mode"): print(f"Menu Detect Error: {e}")
                                  self.is_in_menu_state = False
@@ -1426,7 +1485,8 @@ class VisionEngine:
                 # 2. Level OCR (Only if NOT in Menu OR if waiting for early game)
                 # CRITICAL: In early game (JOUR I displayed), icon is missing but we MUST detect Level 1
                 # So we force Level OCR even without icon if icon is missing (potential early game)
-                should_scan_level = (not self.is_in_menu_state) or (not is_icon_visible)
+                # Also force if Tuning Mode is active
+                should_scan_level = (not self.is_in_menu_state) or (not is_icon_visible) or self.tuning_mode
                 
                 if should_scan_level and self.level_region:
                     if current_sec % 5 == 0: logger.info(f"DEBUG: Scanning Level (menu={self.is_in_menu_state}, icon={is_icon_visible})")

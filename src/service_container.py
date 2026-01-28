@@ -10,6 +10,7 @@ class ServiceContainer:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(ServiceContainer, cls).__new__(cls)
+            cls._instance.services_initialized = False
         return cls._instance
 
     def register(self, interface: Type[T], implementation: T) -> None:
@@ -29,6 +30,7 @@ class ServiceContainer:
         """Initialize all registered services."""
         for service in self._services.values():
             service.initialize()
+        self.services_initialized = True
 
     def shutdown_all(self) -> None:
         """Shutdown all registered services."""

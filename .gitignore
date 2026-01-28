@@ -13,3 +13,6 @@ application.jsonl*
 *.db
 !data/config.json
 !data/ocr_patterns.json
+startup_log.txt
+start_silent.vbs
+
