@@ -37,9 +37,9 @@
         "width": 298,
         "height": 58
     },
-    "session_count": 336,
-    "unified_pos_x": 2779,
-    "unified_pos_y": 34,
+    "session_count": 363,
+    "unified_pos_x": 1648,
+    "unified_pos_y": 82,
     "runes_icon_region": {
         "top": 115,
         "left": 3364,
@@ -54,12 +54,12 @@
     },
     "debug_overlay_positions": {
         "Zone": {
-            "x": 1776,
-            "y": 12
+            "x": 3414,
+            "y": 61
         },
         "Level": {
-            "x": 123,
-            "y": 201
+            "x": 3229,
+            "y": 61
         },
         "Runes": {
             "x": 3604,
@@ -85,5 +85,13 @@
             "mode": "Digits",
             "padding": 50
         }
+    },
+    "nightreign": {
+        "snowball_d1": 1.35,
+        "snowball_d2": 1.15,
+        "farming_goal": 332612,
+        "target_level": 14,
+        "day_duration": 840,
+        "total_time": 1680
     }
 }

@@ -3,6 +3,8 @@ from abc import ABCMeta
 from typing import Callable, Optional
 from src.services.base_service import IOverlayService, IConfigService
 from src.ui.qt_overlay import UnifiedOverlay
+from src.ui.level_indicator import LevelIndicatorOverlay
+from src.ui.missing_runes_overlay import MissingRunesOverlay
 from src.service_container import ServiceContainer
 
 class OverlayMeta(type(QObject), ABCMeta):
@@ -15,6 +17,8 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
     def __init__(self):
         super().__init__()
         self.unified_overlay: Optional[UnifiedOverlay] = None
+        self.level_indicator: Optional[LevelIndicatorOverlay] = None
+        self.missing_runes_overlay: Optional[MissingRunesOverlay] = None
         self.is_recording = False
         
         # Connect signal to slot (will execute in Main Thread)
@@ -27,6 +31,10 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
     def shutdown(self) -> None:
         if self.unified_overlay:
             self.unified_overlay.close()
+        if self.level_indicator:
+            self.level_indicator.close()
+        if self.missing_runes_overlay:
+            self.missing_runes_overlay.close()
 
     def create_overlay(self):
         config_service = ServiceContainer().resolve(IConfigService)
@@ -37,19 +45,35 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
             # Restore position
             x = config_service.get("unified_pos_x")
             y = config_service.get("unified_pos_y")
+            print(f"[DEBUG] Restoring position from config: x={x}, y={y}")
             if x is not None and y is not None:
                 self.unified_overlay.move(x, y)
+                print(f"[DEBUG] Position restored to: ({x}, {y})")
+            else:
+                # Default position if none saved
+                self.unified_overlay.move(20, 20)
+                print(f"[DEBUG] Using default position: (20, 20)")
 
             self.unified_overlay.position_changed.connect(self._on_overlay_moved)
             self.unified_overlay.show()
+            
+        if not self.level_indicator:
+            self.level_indicator = LevelIndicatorOverlay()
+            self.level_indicator.show()
+        
+        if not self.missing_runes_overlay:
+            self.missing_runes_overlay = MissingRunesOverlay()
+            self.missing_runes_overlay.show()
 
     def _on_overlay_moved(self, x: int, y: int):
         try:
+            print(f"[DEBUG] _on_overlay_moved called: ({x}, {y})")
             config_service = ServiceContainer().resolve(IConfigService)
             config_service.set("unified_pos_x", x)
             config_service.set("unified_pos_y", y)
-        except:
-            pass 
+            print(f"[DEBUG] Position saved to config: ({x}, {y})")
+        except Exception as e:
+            print(f"[DEBUG] Error saving position: {e}") 
 
     def show(self) -> None:
         # If called from main thread (init), direct call is best.
@@ -91,6 +115,38 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
     def update_run_stats(self, stats: dict) -> None:
         # Clone stats if needed? Dicts are passed by reference, but usually stats is a new dict from StateService
         self.schedule(0, lambda: self.unified_overlay.set_stats(stats) if self.unified_overlay else None)
+        
+        # Update Circle Indicator if applicable
+        if "level" in stats and "potential_level" in stats:
+            def _u_indicator():
+                if self.level_indicator:
+                    config = ServiceContainer().resolve(IConfigService)
+                    region = config.get("level_region", [0, 0, 100, 100])
+                    self.level_indicator.set_data(stats["level"], stats["potential_level"], region)
+            self.schedule(0, _u_indicator)
+        
+        # Update Missing Runes Overlay
+        if "missing_runes" in stats and "is_max_level" in stats:
+            def _u_missing():
+                if self.missing_runes_overlay:
+                    from src.services.rune_data import RuneData
+                    config = ServiceContainer().resolve(IConfigService)
+                    region = config.get("level_region", [0, 0, 100, 100])
+                    
+                    # Calculate level cost for blink effect
+                    current_level = stats.get("level", 1)
+                    next_level = current_level + 1
+                    current_total = RuneData.get_total_runes_for_level(current_level) or 0
+                    next_total = RuneData.get_total_runes_for_level(next_level) or 0
+                    level_cost = next_total - current_total
+                    
+                    self.missing_runes_overlay.set_data(
+                        stats["missing_runes"], 
+                        stats["is_max_level"], 
+                        region, 
+                        level_cost
+                    )
+            self.schedule(0, _u_missing)
 
     def show_recording(self, show: bool):
         self.is_recording = show

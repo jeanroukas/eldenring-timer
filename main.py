@@ -247,7 +247,10 @@ class Launcher:
         
         # Show Tuner
         self.tuner_window = OCRTunerWindow(self.vision_service)
-        self.tuner_window.show()
+        # self.tuner_window.show()  # Disabled auto-open at startup
+        
+        # Connect Hotkey to Tuner
+        self.state_service.tuner_callback = lambda: self.overlay_service.schedule(0, self.tuner_window.show)
 
 
 if __name__ == "__main__":

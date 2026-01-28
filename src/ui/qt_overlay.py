@@ -28,25 +28,30 @@ class DraggableWindow(QMainWindow):
             self.old_pos = event.globalPosition().toPoint()
 
     def mouseReleaseEvent(self, event):
+        # Save position if we were dragging
+        if self.old_pos:
+            print(f"[DEBUG] Position changed: ({self.x()}, {self.y()})")
+            self.position_changed.emit(self.x(), self.y())
+        
         self.old_pos = None
         
-        # Check for Graph Click (Bottom Area)
-        # Graph Y is ~160 to H-20. X is 20 to W-20
+        # Check for Graph Click (Bottom Area) - only if it was a click, not a drag
+        # Graph Y is ~260 to H-20. X is 20 to W-20
         rect = self.rect()
-        graph_y = 160
+        graph_y = 260  # Updated to match new graph position
         if event.pos().y() > graph_y and event.pos().x() > 20 and event.pos().x() < rect.width()-20:
              self.show_projection = not self.show_projection
              self.update()
-             return
 
-        self.position_changed.emit(self.x(), self.y())
+
+
 
 class UnifiedOverlay(DraggableWindow):
     def __init__(self):
         super().__init__()
         
-        # Geometry: 550x420 (Ultra Compact)
-        self.setGeometry(20, 20, 550, 420)
+        # Set size only (position will be restored by overlay_service)
+        self.resize(550, 420)  # Ultra Compact
         
         # State Data
         self.timer_text = "00:00"
@@ -72,6 +77,7 @@ class UnifiedOverlay(DraggableWindow):
             "graph_events": [], # [(t, type), ...]
             "rps": 0,
             "grade": "C",
+            "delta_runes": 0,
             "time_to_level": "---"
         }
     
@@ -104,7 +110,20 @@ class UnifiedOverlay(DraggableWindow):
         return name
 
     def get_total_runes_for_level(self, level: int) -> int:
-        return RuneData.get_total_runes_for_level(level) or 0
+        return RuneData.get_total_runes_for_level(level)
+    
+    def draw_text_with_shadow(self, painter, x, y, text, color, shadow_offset=2, shadow_alpha=100):
+        """
+        Draw text with a soft drop shadow for better visibility.
+        """
+        # Draw shadow (offset, semi-transparent black)
+        shadow_color = QColor(0, 0, 0, shadow_alpha)
+        painter.setPen(shadow_color)
+        painter.drawText(x + shadow_offset, y + shadow_offset, text)
+        
+        # Draw main text
+        painter.setPen(color)
+        painter.drawText(x, y, text) or 0
 
     def get_clean_history(self, history):
         """
@@ -156,15 +175,14 @@ class UnifiedOverlay(DraggableWindow):
         rect = self.rect()
         w, h = rect.width(), rect.height()
         
-        # 1. Background Box
-        painter.setBrush(color_bg)
-        painter.setPen(QPen(color_border, 1))
-        painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 12, 12)
+        # 1. Background Box (TRANSPARENT as per user request)
+        # painter.setBrush(color_bg)
+        # painter.setPen(QPen(color_border, 1))
+        # painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 12, 12)
         
         # --- DATA EXTRACTION ---
         lvl = self.stats.get("level", 1)
-        miss = self.stats.get("missing_runes", 0)
-        is_max = self.stats.get("is_max_level", False)
+        # miss and is_max moved to MissingRunesOverlay
         deaths = self.stats.get("death_count", 0)
         recoveries = self.stats.get("recovery_count", 0)
         total_run = self.stats.get("total_runes", 0)
@@ -187,65 +205,22 @@ class UnifiedOverlay(DraggableWindow):
         
         y_top = 45 
         
-        # === COL 1: TIMING (Main) ===
-        # Timer
-        font_timer = QFont("Helvetica", 32)
+        # === CENTER AREA: PRIMARY FOCUS ===
+        # Reorganized for maximum visibility in combat
+        center_x = w // 2
+        y_center = 60
+        
+        # 1. Timer (Chrono)
+        font_timer = QFont("Helvetica", 48)
         font_timer.setBold(True)
         painter.setFont(font_timer)
-        painter.setPen(color_text_white)
-        painter.drawText(col1_x, y_top, self.timer_text)
+        # Center horizontally
+        fm_timer = QFontMetrics(font_timer)
+        tw_timer = fm_timer.horizontalAdvance(self.timer_text)
+        self.draw_text_with_shadow(painter, center_x - tw_timer // 2, y_center, self.timer_text, color_text_white, 3, 150)
         
-        # Phase
-        font_phase = QFont("Cinzel", 14)
-        font_phase.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
-        painter.setFont(font_phase)
-        painter.setPen(color_gold)
-        painter.drawText(col1_x + 2, y_top + 30, phase.upper())
-        
-        # DEBUG LOGGING (User Request)
-        # The 'phase' variable is already defined and shortened above.
-        if not hasattr(self, "last_debug_phase"):
-            self.last_debug_phase = None
-        if self.last_debug_phase != phase:
-            print(f"DEBUG UI OVERLAY: Drawing Phase '{phase}'")
-            self.last_debug_phase = phase
-            
-        # Level Progress (NEW)
-        pot = self.stats.get("potential_level", lvl)
-        level_str = f"Level {lvl}"
-        if pot > lvl:
-             level_str += f" ➤ {pot}" # Arrow char
-             
-        font_lvl = QFont("Cinzel", 12)
-        font_lvl.setBold(True)
-        painter.setFont(font_lvl)
-        painter.setPen(color_text_white)
-        painter.drawText(col1_x, y_top + 60, level_str)
-        
-        # Missing
-        font_label = QFont("Cinzel", 9)
-        painter.setFont(font_label)
-        painter.setPen(color_text_dim)
-        painter.drawText(col1_x, y_top + 82, "MISSING")
-        
-        font_missing = QFont("Cinzel", 18)
-        font_missing.setBold(True)
-        painter.setFont(font_missing)
-        if is_max:
-             painter.setPen(color_gold)
-             painter.drawText(col1_x, y_top + 105, "MAX")
-        else:
-             painter.setPen(color_amber if miss > 0 else color_green)
-             painter.drawText(col1_x, y_top + 105, f"{miss:,}")
-
-
-        # === COL 2: PERFORMANCE (Stacked) ===
-        # Center alignment helper
-        center_x = col2_x + 50 
-        
-        # 1. Efficiency Grade (Top)
-        grade_y = y_top + 20
-        font_grade = QFont("Cinzel", 36) # Smaller than 48
+        # 2. Grade & Delta (Below Timer)
+        font_grade = QFont("Cinzel", 24)
         font_grade.setBold(True)
         painter.setFont(font_grade)
         
@@ -255,98 +230,85 @@ class UnifiedOverlay(DraggableWindow):
         elif grade == "B": grade_color = color_text_white
         elif grade == "C": grade_color = color_amber
         elif grade == "D": grade_color = QColor(255, 100, 50)
-        elif grade == "E": grade_color = color_death
-        elif grade == "F": grade_color = QColor(150, 0, 0)
         
-        # Center text roughly
-        # Manual adjustment assuming single char width
-        text_width = painter.fontMetrics().horizontalAdvance(grade)
-        painter.setPen(grade_color)
-        painter.drawText(center_x - text_width // 2, grade_y, grade)
+        fm_grade = QFontMetrics(font_grade)
+        tw_grade = fm_grade.horizontalAdvance(grade)
+        self.draw_text_with_shadow(painter, center_x - tw_grade // 2 - 40, y_center + 35, grade, grade_color, 2, 130)
         
-        # 2. Delta (Below Grade)
+        # Delta next to grade
         delta = self.stats.get("delta_runes", 0)
         delta_str = f"{delta/1000:+.1f}k"
-        
-        font_delta = QFont("Helvetica", 12)
-        font_delta.setBold(True)
+        font_delta = QFont("Helvetica", 14, QFont.Weight.Bold)
         painter.setFont(font_delta)
-        
-        if delta >= 0:
-            painter.setPen(color_green)
-            delta_str = "+" + delta_str.lstrip("+")
-        else:
-            painter.setPen(color_death)
-            
-        text_width = painter.fontMetrics().horizontalAdvance(delta_str)
-        painter.drawText(center_x - text_width // 2, grade_y + 25, delta_str)
+        delta_color = color_green if delta >= 0 else color_death
+        self.draw_text_with_shadow(painter, center_x - 10, y_center + 32, delta_str, delta_color, 2, 120)
 
-        # 3. Next Level (Bottom)
-        painter.setFont(QFont("Cinzel", 9))
-        painter.setPen(color_text_dim)
-        painter.drawText(center_x - 30, grade_y + 50, "NEXT LVL")
-        
-        font_next = QFont("Helvetica", 11)
-        font_next.setBold(True)
-        painter.setFont(font_next)
-        painter.setPen(color_gold)
-        painter.drawText(center_x - 30, grade_y + 68, time_to_lvl)
+        # 3. Missing Runes - REMOVED (now in separate overlay below level region)
+        # See MissingRunesOverlay
 
-        # === COL 3: STATS HISTORY ===
+
+
+        # === LEFT COLUMN: PHASE & LEVEL ===
+        col_l_x = 20
+        y_side = 40
+        
+        # Phase (Small, Top Left)
+        font_side_p = QFont("Cinzel", 11, QFont.Weight.Bold)
+        painter.setFont(font_side_p)
+        self.draw_text_with_shadow(painter, col_l_x, y_side, phase.upper(), color_gold, 2, 110)
+        
+        # Level (Below Phase)
+        pot = self.stats.get("potential_level", lvl)
+        level_str = f"Lvl {lvl}"
+        if pot > lvl: level_str += f" > {pot}"
+        
+        font_side_l = QFont("Cinzel", 14, QFont.Weight.Bold)
+        painter.setFont(font_side_l)
+        self.draw_text_with_shadow(painter, col_l_x, y_side + 25, level_str, color_text_white, 2, 120)
+        
+        # Next Level Time
+        painter.setFont(QFont("Helvetica", 9))
+        self.draw_text_with_shadow(painter, col_l_x, y_side + 45, f"IN: {time_to_lvl}", color_text_dim, 1, 100)
+
+        # === RIGHT COLUMN: SECONDARY STATS ===
+        col_r_x = w - 140
         y_right = 40
-        row_height = 24
-        font_stats = QFont("Helvetica", 11)
-        font_stats.setBold(True)
-        painter.setFont(font_stats)
+        row_h = 22
         
-        # OCR Dot
-        ocr_color = color_green if self.ocr_score > 60 else (color_amber if self.ocr_score > 30 else color_death)
-        painter.setBrush(ocr_color)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(col3_x, y_right - 10, 8, 8)
-        painter.setPen(color_text_dim)
-        painter.drawText(col3_x + 15, y_right, f"OCR: {int(self.ocr_score)}%")
-
+        # OCR Score
+        ocr_color = color_green if self.ocr_score > 70 else (color_amber if self.ocr_score > 40 else color_death)
+        painter.setPen(ocr_color)
+        painter.setFont(QFont("Helvetica", 9, QFont.Weight.Bold))
+        painter.drawText(col_r_x, y_right, f"OCR: {int(self.ocr_score)}%")
+        y_right += row_h
         
-
-        y_right += row_height + 5
-        
-        # Current Runes (NEW)
+        # Runes / Total
         curr_runes = self.stats.get("current_runes", 0)
         painter.setPen(color_text_white)
-        painter.drawText(col3_x, y_right, f"Runes: {curr_runes:,}")
-        y_right += row_height
-
-        # Merch
-        painter.setPen(color_text_dim) # Dimm merch
-        painter.drawText(col3_x, y_right, f"Merch: {merch_spent:,}")
-        y_right += row_height
-        
-        # Total
+        painter.setFont(QFont("Helvetica", 10))
+        painter.drawText(col_r_x, y_right, f"Runes: {curr_runes:,}")
+        y_right += row_h
         painter.setPen(color_gold)
-        painter.drawText(col3_x, y_right, f"Total: {total_run:,}")
-        y_right += row_height
+        painter.drawText(col_r_x, y_right, f"Total: {total_run//1000}k")
+        y_right += row_h
         
-        # Deaths
+        # Deaths / Recov
         painter.setPen(color_death)
-        painter.drawText(col3_x, y_right, f"💀 Deaths: {deaths}")
-        y_right += row_height
-        
-        # Recov
+        painter.drawText(col_r_x, y_right, f"💀 {deaths}")
         painter.setPen(color_recov)
-        painter.drawText(col3_x, y_right, f"♻️ Recov: {recoveries}")
+        painter.drawText(col_r_x + 40, y_right, f"♻️ {recoveries}")
 
 
         # === GRAPH AREA (Dynamic Grid + Markers) ===
         graph_x = 20
-        graph_y = 160
+        graph_y = 260  # Was 160, now 260 (+100px top margin for blue circles)
         graph_w = w - 40
-        graph_h = h - 180 # Padding bottom
+        graph_h = h - 280  # Adjusted for new graph_y (was h-180, now h-280)
         
-        # Draw Graph BG
-        painter.setBrush(QColor(0, 0, 0, 100))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRect(graph_x, graph_y, graph_w, graph_h)
+        # Draw Graph BG (TRANSPARENT as per user request)
+        # painter.setBrush(QColor(0, 0, 0, 100))
+        # painter.setPen(Qt.PenStyle.NoPen)
+        # painter.drawRect(graph_x, graph_y, graph_w, graph_h)
         
         if not history:
              painter.setFont(QFont("Cinzel", 10))
@@ -377,9 +339,11 @@ class UnifiedOverlay(DraggableWindow):
             path_ideal = QPainterPath()
             
             # Constants matching StateService
-            day1_dur = 1200  # 20 mins
-            day2_dur = 1200  # 20 mins
-            farming_goal = 337578 # 437,578 - 100,000 (Bosses)
+            # Constants matching StateService (Phase 4: 14m cycles)
+            day1_dur = 840  # 14 mins
+            day2_dur = 840  # 14 mins
+            farming_goal = self.stats.get("nr_config", {}).get("goal", 337578)
+            nr_total_time = self.stats.get("nr_config", {}).get("duration", 1680)
             
             boss1_drop = 50000
             
@@ -399,9 +363,9 @@ class UnifiedOverlay(DraggableWindow):
                 val = 0
                 
                 if t < day1_dur:
-                    # Phase 1: Day 1 (0 -> 20m)
+                    # Phase 1: Day 1 (0 -> 14m)
                     # Power 1.35
-                    ratio = t / 2400.0
+                    ratio = t / nr_total_time
                     val = farming_goal * (ratio ** 1.35)
                     
                 else:
@@ -426,32 +390,28 @@ class UnifiedOverlay(DraggableWindow):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(path_ideal)
 
-        # --- RAW DATA PLOT (Background / Historical) ---
-        # "Garder le graphique actuel en orange foncé"
-        history_raw = self.stats.get("run_history_raw", [])
-        if history_raw:
-            path_raw = QPainterPath()
-            start_px = graph_x
-            start_py = graph_y + graph_h
-            path_raw.moveTo(start_px, start_py)
-            
-            valid_raw = False
-            for i, val in enumerate(history_raw):
-                # Ensure we don't exceed bounds if raw is longer than max (shouldn't be)
-                if i > x_range_max: break
-                
-                px = graph_x + i * step_x
-                py = graph_y + graph_h - (val / y_range_max * graph_h)
-                path_raw.lineTo(px, py)
-                valid_raw = True
-            
-            if valid_raw:
-                # User Request: "Orange très saturé mais alpha a 60%"
-                # 60% of 255 is approx 153
-                color_raw = QColor(255, 120, 0, 153) 
-                painter.setPen(QPen(color_raw, 3)) # User Request: Thicker (was 2)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawPath(path_raw)
+        # --- RAW DATA PLOT REMOVED PER USER REQUEST ---
+        start_px = graph_x
+        start_py = graph_y + graph_h
+
+        # history_raw = self.stats.get("run_history_raw", [])
+        # if history_raw:
+        #     path_raw = QPainterPath()
+        #     path_raw.moveTo(start_px, start_py)
+        #     
+        #     valid_raw = False
+        #     for i, val in enumerate(history_raw):
+        #         if i > x_range_max: break
+        #         px = graph_x + i * step_x
+        #         py = graph_y + graph_h - (val / y_range_max * graph_h)
+        #         path_raw.lineTo(px, py)
+        #         valid_raw = True
+        #     
+        #     if valid_raw:
+        #         color_raw = QColor(255, 120, 0, 153) 
+        #         painter.setPen(QPen(color_raw, 3))
+        #         painter.setBrush(Qt.BrushStyle.NoBrush)
+        #         painter.drawPath(path_raw)
 
         # Apply Cleaning to Green Curve
         history_clean = self.get_clean_history(history)
@@ -498,7 +458,7 @@ class UnifiedOverlay(DraggableWindow):
                 painter.drawEllipse(QPoint(int(px), int(py)), 3, 3)
 
         # --- LEVEL GRID LINES ---
-        painter.setPen(QPen(QColor(255, 255, 255, 80), 1, Qt.PenStyle.DotLine))
+        painter.setPen(QPen(QColor(255, 255, 255, 150), 1, Qt.PenStyle.DotLine))  # Increased from 80 to 150 for better visibility
         painter.setFont(QFont("Helvetica", 8))
         
         # Key Levels: Dynamic based on Y-Range
@@ -545,11 +505,39 @@ class UnifiedOverlay(DraggableWindow):
             painter.drawLine(graph_x, int(gy), graph_x + graph_w, int(gy))
             painter.drawText(graph_x + graph_w - 25, int(gy) - 3, f"L{lvl_num}")
 
-        # --- VIEW LABEL ---
-        painter.setPen(color_text_dim)
-        painter.setFont(QFont("Helvetica", 9, QFont.Weight.Bold))
-        label = "VIEW: PROJECTION (40m)" if self.show_projection else "VIEW: REAL-TIME"
-        painter.drawText(graph_x + 10, graph_y + 20, label)
+        # --- VIEW LABEL REMOVED per user request ---
+        # painter.setPen(color_text_dim)
+        # painter.setFont(QFont("Helvetica", 9, QFont.Weight.Bold))
+        # label = "VIEW: PROJECTION (40m)" if self.show_projection else "VIEW: REAL-TIME"
+        # painter.drawText(graph_x + 10, graph_y + 20, label)
+        
+        # --- DAY TRANSITION VERTICAL BARS ---
+        # Draw vertical lines at Day 2 and Day 3 transitions
+        painter.setPen(QPen(QColor(255, 255, 255, 100), 2, Qt.PenStyle.DashLine))
+        painter.setFont(QFont("Cinzel", 9, QFont.Weight.Bold))
+        
+        for trans in transitions:
+            trans_name = trans.get("name", "")
+            trans_t = trans.get("t", 0)
+            
+            # Only show Day 2 and Day 3 transitions
+            if "Day 2" in trans_name or "Day 3" in trans_name:
+                relative_t = trans_t - start_t if start_t > 0 else 0
+                if relative_t < 0: continue
+                
+                # Clip if out of range in Zoomed Mode
+                if not self.show_projection and relative_t > len(history): continue
+                
+                tx = graph_x + relative_t * step_x
+                
+                # Draw vertical line
+                painter.drawLine(int(tx), graph_y, int(tx), graph_y + graph_h)
+                
+                # Draw label at top
+                label = "D2" if "Day 2" in trans_name else "D3"
+                painter.setPen(QColor(255, 215, 0, 200))  # Gold color
+                painter.drawText(int(tx) - 10, graph_y - 5, label)
+                painter.setPen(QPen(QColor(255, 255, 255, 100), 2, Qt.PenStyle.DashLine))  # Reset pen
 
         # --- MARKERS ---
         start_t = self.stats.get("graph_start_time", 0)
@@ -574,37 +562,27 @@ class UnifiedOverlay(DraggableWindow):
                  painter.drawText(int(px) - 6, int(graph_y + graph_h) - 10, icon)
                  
         # --- SHORTCUTS FOOTER (User Request) ---
-        # --- SHORTCUTS HEADER (ROBUST) ---
-        # Draw a semi-transparent black strip at the very top to ensure contrast
-        header_height = 22
-        painter.fillRect(0, 0, w, header_height, QColor(0, 0, 0, 180))
-        
-        shortcut_font = QFont("Arial", 9, QFont.Weight.Bold)
-        painter.setFont(shortcut_font)
-        painter.setPen(QColor(255, 255, 255)) # Pure White
-        
-        shortcuts = "F5:Rst  F6:D2  F7:D3  F8:Boss  F9:UI  F10:Undo  F11:Quit"
-        
-        fm = QFontMetrics(shortcut_font)
-        sw = fm.horizontalAdvance(shortcuts)
-        # Vertically center in the strip: strip starts at 0, height 22. Text baseline approx 15.
-        painter.drawText(int(w/2 - sw/2), 16, shortcuts)
+        # --- SHORTCUTS REMOVED PER USER REQUEST ---
+        pass
                  
     def show_recording(self, show: bool):
         self.is_recording = show
         self.update()
 
     def mouseReleaseEvent(self, event):
+        # IMPORTANT: Call parent to handle position saving
+        super().mouseReleaseEvent(event)
+        
         # Left Click: Toggle Graph Mode
         if event.button() == Qt.MouseButton.LeftButton:
             # Check if click is in graph area (roughly bottom half)
             rect = self.rect()
-            graph_y = 160
+            graph_y = 260  # Updated to match new graph position
             if event.position().y() > graph_y:
                 self.show_projection = not self.show_projection
                 self.update()
         
         # Right Click: Prevent Crash / Do Nothing
         elif event.button() == Qt.MouseButton.RightButton:
-            event.accept() # Swallow event
+            event.accept()  # Swallow event
             pass

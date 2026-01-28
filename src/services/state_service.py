@@ -127,6 +127,11 @@ class StateService(IStateService):
         
         # Early Game Detection State
         self.waiting_for_day1 = False  # True when Level 1 detected, waiting for JOUR I
+        
+        self.tuner_callback = None
+        
+        # --- NIGHTREIGN CONSTANTS (Configurable) ---
+        self._load_nr_constants()
 
     def initialize(self) -> bool:
         logger.info("StateService: Initializing...")
@@ -255,17 +260,17 @@ class StateService(IStateService):
                     logger.info(f"Bound {key} -> {name}")
 
                 # -- STANDARD F-KEYS MAPPING --
-                _bind('ctrl+f5', lambda: self.handle_manual_feedback("DAY 1", force=True), "RESET")
+                _bind('f4', self.reset_to_initial_state, "FULL_RESET")
+                _bind('f5', lambda: self.handle_manual_feedback("DAY 1", force=True), "RESET")
                 _bind('f6', lambda: self.handle_manual_feedback("DAY 2", force=True), "FORCE_D2")
                 _bind('f7', lambda: self.handle_manual_feedback("DAY 3", force=True), "FORCE_D3")
                 
                 # F8: Boss Skip / Correction
                 _bind('f8', self.skip_to_boss, "BOSS_SKIP")
                 
-                _bind('f9', self.overlay.toggle, "UI_TOGGLE")
-                _bind('f10', self.handle_false_positive, "UNDO")
-                # F11: Quit (Must be scheduled on Main Thread to avoid crash)
-                _bind('f11', lambda: self.overlay.schedule(0, self.tray.quit_app) if self.tray else os._exit(0), "QUIT")
+                _bind('f9', lambda: self.tuner_callback() if self.tuner_callback else None, "OPEN_TUNER")
+                # F10: Quit (Must be scheduled on Main Thread to avoid crash)
+                _bind('f10', lambda: self.overlay.schedule(0, self.tray.quit_app) if self.tray else os._exit(0), "QUIT")
                 
             except Exception as e:
                 logger.error(f"Failed to register hotkeys: {e}")
@@ -309,6 +314,84 @@ class StateService(IStateService):
             "phase": phase_name,
             "level": getattr(self, 'current_run_level', 1)
         })
+
+    def reset_to_initial_state(self):
+        """
+        F4 Hotkey: Reset to initial state (like after finishing a run).
+        Clears all run data and returns to waiting state.
+        """
+        logger.info("F4 PRESSED: Resetting to initial state...")
+        
+        # Reset session state
+        self.session.phase_index = -1
+        self.session.start_time = None
+        self.session.boss3_start_time = None
+        self.session.day1_detection_time = None
+        self.session.timer_frozen = False
+        self.session.current_run_level = 1
+        self.session.current_run_runes = 0
+        self.session.total_runes_earned = 0
+        self.session.total_runes_spent = 0
+        self.session.death_count = 0
+        self.session.recovery_count = 0
+        self.session.runes_at_death = 0
+        
+        # Reset phase tracking
+        self.current_phase = "Waiting"
+        self.last_phase_change_time = time.time()
+        
+        # Reset detection states
+        self.waiting_for_day1 = False
+        self.is_in_menu = False
+        self._was_in_menu = False
+        self._menu_first_detected = 0
+        self._menu_validated = False
+        self.victory_detected = False
+        self.victory_check_active = False
+        
+        # Reset rune tracking
+        self.last_valid_total_runes = 0
+        self.last_display_level = 1
+        self.last_display_runes = 0
+        self.gain_verification_candidate = -1
+        self.spike_persistence = 0
+        self.runes_uncertain = False
+        
+        # Reset graph data
+        self.graph_log_data = []
+        
+        # Update UI to initial state
+        self.overlay.update_timer("00:00")
+        self.overlay.update_run_stats({
+            "level": 1,
+            "potential_level": 1,
+            "current_runes": 0,
+            "total_runes": 0,
+            "next_level": 2,
+            "needed_runes": 0,
+            "missing_runes": 0,
+            "is_max_level": False,
+            "run_history": [],
+            "run_history_raw": [],
+            "transitions": [],
+            "death_count": 0,
+            "recovery_count": 0,
+            "phase_name": "Waiting",
+            "spent_at_merchants": 0,
+            "graph_events": [],
+            "rps": 0,
+            "grade": "C",
+            "delta_runes": 0,
+            "time_to_level": "---",
+            "graph_start_time": 0
+        })
+        
+        logger.info("Reset complete. Waiting for new run...")
+        try:
+            winsound.Beep(800, 100)  # Confirmation beep
+        except:
+            pass
+
 
     def log_session_event(self, event_type: str, data: dict = None):
         """
@@ -762,6 +845,19 @@ class StateService(IStateService):
             self.tray.set_hibernation_mode(True)
 
     def on_config_changed(self, config_key=None):
+        if config_key is None or config_key == "nightreign":
+            self._load_nr_constants()
+            
+    def _load_nr_constants(self):
+        nr = self.config.get("nightreign", {})
+        self.NR_SNOWBALL_D1 = nr.get("snowball_d1", 1.35)
+        self.NR_SNOWBALL_D2 = nr.get("snowball_d2", 1.15)
+        self.NR_FARMING_GOAL = nr.get("farming_goal", 337578)
+        self.NR_DAY_DURATION = nr.get("day_duration", 840)
+        self.NR_TOTAL_TIME = nr.get("total_time", 1680)
+        self.NR_IDEAL_TARGET = RuneData.get_total_runes_for_level(nr.get("target_level", 14)) or 437578
+        self.NR_BOSS_DROPS = 50000 # Fixed for now
+        logger.info(f"StateService: NR Constants loaded (D1:{self.NR_SNOWBALL_D1}, D2:{self.NR_SNOWBALL_D2}, Goal:{self.NR_FARMING_GOAL})")
         logger.info(f"StateService: Config updated. Auto-Hibernate: {self.config.get('auto_hibernate', True)}")
         # Removed aggressive check to prevent crash on startup / threading issues
         pass
@@ -1666,50 +1762,30 @@ class StateService(IStateService):
         
         self.overlay.update_run_stats(stats)
 
-    # --- ANALYTICS ENGINE ---
-
-        # Target: Level 14 (~437k) at 28m (Day 2 End).
-        self.NR_IDEAL_TARGET = 437578 # Lvl 1->14 (Exact)
-        self.NR_FARMING_GOAL = 337578 # Farming Goal (437k - 100k Bosses)
-        
-        # ...
-
-    def get_ideal_runes_at_time(self, t_seconds: float) -> float:
-        """
-        Returns the ideal rune count at time t.
-        Target: Level 14 (~437k) at end of Day 2 (NR_TOTAL_TIME).
-        Split Snowball: Day 1=1.35, Day 2=1.15.
-        """
-        t_eff = max(0, min(t_seconds, self.NR_TOTAL_TIME))
-        t_day1_end = float(self.NR_DAY_DURATION)
-        farming_goal = 337578
-        
-        if t_eff < t_day1_end:
-            # Segment 1: Day 1 (Power 1.35)
-            # Scaling: Proportional to total time, but using D1 power
-            ratio = t_eff / self.NR_TOTAL_TIME
-            return farming_goal * (ratio ** self.NR_SNOWBALL_D1)
+    def get_ideal_runes_at_time(self, t_seconds: float):
+        # Piecewise Logic (Phase 4: 14m cycles)
+        if t_seconds < self.NR_DAY_DURATION:
+            # Day 1: 0 -> 14m
+            ratio = t_seconds / self.NR_TOTAL_TIME
+            val = self.NR_FARMING_GOAL * (ratio ** self.NR_SNOWBALL_D1)
+            return val
+        elif t_seconds < self.NR_TOTAL_TIME:
+            # Day 2: 14m -> 28m
+            # Calculate Day 1 end point (Farming only)
+            val_d1_end = self.NR_FARMING_GOAL * ((self.NR_DAY_DURATION / self.NR_TOTAL_TIME) ** self.NR_SNOWBALL_D1)
+            start_d2 = val_d1_end + self.NR_BOSS_DROPS
             
+            # Growth needed in Day 2 to reach Target (437k)
+            rem_farming = self.NR_IDEAL_TARGET - start_d2
+            
+            # Progress in Day 2
+            t_d2 = t_seconds - self.NR_DAY_DURATION
+            ratio_d2 = t_d2 / self.NR_DAY_DURATION
+            val = start_d2 + rem_farming * (ratio_d2 ** self.NR_SNOWBALL_D2)
+            return val
         else:
-            # Segment 2: Day 2 (After Boss 1)
-            # Baseline: Value at Day 1 end + Boss 1 (50k)
-            ratio_d1 = t_day1_end / self.NR_TOTAL_TIME
-            val_d1 = farming_goal * (ratio_d1 ** self.NR_SNOWBALL_D1)
-            
-            start_val = val_d1 + 50000 
-            target_val = 437578 # Lvl 14 Total
-            
-            # Time in D2
-            t_d2 = t_eff - t_day1_end
-            t_d2_duration = self.NR_TOTAL_TIME - t_day1_end
-            
-            ratio_d2 = t_d2 / t_d2_duration if t_d2_duration > 0 else 1.0
-            
-            # Growth needed in Day 2 to reach Target
-            rem_farming = target_val - start_val
-            current_growth = rem_farming * (ratio_d2 ** self.NR_SNOWBALL_D2)
-            
-            return start_val + current_growth
+            # Post Day 2: Flat + Boss 2 Drop
+            return self.NR_IDEAL_TARGET + self.NR_BOSS_DROPS
 
     def calculate_efficiency_grade(self) -> str:
         if self.session.start_time is None: 

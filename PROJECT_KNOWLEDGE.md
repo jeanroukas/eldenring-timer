@@ -215,6 +215,9 @@ To optimize performance and accuracy:
 - **Recording Dot**: Removed red pulsing dot from Timer area (UI cleanup).
 - **Grade**: Now S-F based on Delta from Ideal Curve (S = +10% ahead).
 - **Hotkeys**:
-  - **J1 / J2 / J3**: Consolidated on a single context-aware hotkey.
+  - **F5**: Reset / Start Day 1.
+  - **F6**: Force Day 2.
+  - **F7**: Force Day 3.
+  - **F8**: Boss Skip / Correction.
   - **F9**: Open OCR Tuner.
   - **F10**: Exit Application.
