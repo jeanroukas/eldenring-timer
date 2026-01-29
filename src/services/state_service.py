@@ -19,6 +19,7 @@ from src.pattern_manager import PatternManager
 from src.services.rune_data import RuneData
 from src.core.session import GameSession
 from src.core.game_rules import GameRules
+from src.core.ticket_manager import TicketManager
 from src.core.events import bus, LevelDetectedEvent, RunesDetectedEvent, MenuDetectedEvent, PhaseChangeEvent, EarlyGameDetectedEvent
 from src.logger import logger
 
@@ -198,6 +199,9 @@ class StateService(IStateService):
         self.lost_runes_pending = 0 
         self.session.graph_events = [] 
         self.permanent_loss = 0 
+        
+        # Transaction Ticket System
+        self.ticket_manager = TicketManager(config)
         self._ignore_next_rune_drop = False
         self._ignore_next_rune_gain = False
         self._ignore_next_rune_gain_grace_period = None
@@ -628,44 +632,58 @@ class StateService(IStateService):
 
                 elif now - event_time >= 10.0:
                     # Still no level up captured? Must be a real purchase.
-                    # STRICT Validation: Must be a multiple of 100 (User Request)
-                    if spent_val % 100 == 0:
-                        self.spent_at_merchants += spent_val
-                        self.log_session_event("SPENDING", {"spent": spent_val, "total_spent": self.spent_at_merchants, "current": self.session.current_runes})
-                        self.recent_spending_history.append((time.time(), spent_val))
-                        
-                        # GRAPH DECREASE: Subtract spending from accumulated history
-                        # This makes the graph go DOWN when you spend runes at merchants
-                        for i in range(len(self.session.run_accumulated_history)):
-                            self.session.run_accumulated_history[i] -= spent_val
-                            if self.session.run_accumulated_history[i] < 0:
-                                self.session.run_accumulated_history[i] = 0
-                        
-                        # Add spending event marker
-                        self.session.graph_events.append({"t": len(self.session.run_accumulated_history), "type": "SPENDING", "amount": spent_val})
-                        
-                        if self.config.get("debug_mode"):
-                            logger.info(f"SPENDING CONFIRMED: -{spent_val} runes. Graph decreased. Total spent: {self.spent_at_merchants}")
-                    else:
-                        # REJECT LOGIC
-                        if self.config.get("debug_mode"):
-                            logger.info(f"Spending Rejected (Non-standard amount): {spent_val} (Old: {old_runes_val} -> New: {self.session.current_runes}). Assuming OCR Error.")
-                        
-                        # We must revert the "current_runes" to "old_runes_val" internally?
-                        # No, if we reject the spending, we just assume the drop was an error.
-                        # However, 'self.session.current_runes' is constantly updated by OCR.
-                        # IF the OCR stabilizes on this new weird value, we might have an issue.
-                        # But typically, if it's 6499 instead of 6500, it might flicker back and forth.
-                        # For now, by NOT adding it to 'spent_at_merchants', we effectively treat it as missing wealth (Death/Loss) or just ignore it in the graph math?
-                        
-                        # Wait, if we ignore it, 'current_runes' is still low.
-                        # So 'Effective Wealth' (Current + Spent) will DROP. 
-                        # This looks like a DIP in the graph.
-                        # If we want to "refouler" (reject), we imply we don't believe the NEW Reading.
-                        pass
-                        
+                    # TICKET SYSTEM: Create ticket instead of immediate decision
+                    ticket = self.ticket_manager.create_ticket(
+                        amount=spent_val,
+                        old_runes=old_runes_val,
+                        new_runes=self.session.current_runes
+                    )
+                    
+                    # Ticket will be resolved automatically by TicketManager
+                    # based on evidence (level change, multiple of 100, etc.)
+                    
+                    self.pending_spending_event = None
+                    
+                # Clear old pending event if it exists
+                if self.pending_spending_event and (now - self.pending_spending_event[0]) > 30:
                     self.pending_spending_event = None
 
+            # --- TICKET SYSTEM: Periodic Resolution ---
+            # Check pending tickets and resolve based on evidence
+            self.ticket_manager.check_pending_tickets()
+            
+            # Apply validated tickets to game state
+            for ticket in self.ticket_manager.get_validated_tickets():
+                if ticket.resolution == "MERCHANT":
+                    # Apply merchant spending
+                    self.spent_at_merchants += ticket.amount
+                    self.log_session_event("SPENDING", {"spent": ticket.amount, "total_spent": self.spent_at_merchants, "current": self.session.current_runes})
+                    self.recent_spending_history.append((time.time(), ticket.amount))
+                    
+                    # GRAPH DECREASE: Subtract spending from accumulated history
+                    for i in range(len(self.session.run_accumulated_history)):
+                        self.session.run_accumulated_history[i] -= ticket.amount
+                        if self.session.run_accumulated_history[i] < 0:
+                            self.session.run_accumulated_history[i] = 0
+                    
+                    # Add spending event marker
+                    self.session.graph_events.append({"t": len(self.session.run_accumulated_history), "type": "SPENDING", "amount": ticket.amount})
+                    
+                    if self.config.get("debug_mode"):
+                        logger.info(f"TICKET_APPLIED: {ticket.id} | MERCHANT spending -{ticket.amount}. Total spent: {self.spent_at_merchants}")
+                
+                elif ticket.resolution == "LEVEL_UP":
+                    # Level-up: No graph decrease (already handled by level change logic)
+                    if self.config.get("debug_mode"):
+                        logger.info(f"TICKET_APPLIED: {ticket.id} | LEVEL_UP (no graph change)")
+                
+                # Mark ticket as applied
+                self.ticket_manager.mark_applied(ticket.id)
+            
+            # Cleanup old tickets (every 5 minutes)
+            if int(time.time()) % 300 == 0:
+                self.ticket_manager.cleanup_old_tickets()
+            
             # --- Process _ignore_next_rune_gain Grace Period ---
             if self._ignore_next_rune_gain_grace_period:
                 event_time = self._ignore_next_rune_gain_grace_period
@@ -1610,6 +1628,14 @@ class StateService(IStateService):
                         self._level_up_pending_sync = (time.time(), total_jump_cost)
                         if self.config.get("debug_mode"):
                             logger.info(f"Level-Up Sync Guard Activated (Expected Drop: {total_jump_cost})")
+                
+                # TICKET SYSTEM: Add level-up evidence to pending tickets
+                for ticket in self.ticket_manager.get_active_tickets():
+                    level_cost = RuneData._LEVEL_COSTS.get(old_level, 0)
+                    # Check if ticket amount matches level cost
+                    if abs(ticket.amount - total_jump_cost) < 100:
+                        self.ticket_manager.add_evidence(ticket.id, "level_up_detected", True)
+                        self.ticket_manager.add_evidence(ticket.id, "level_cost_match", True)
                 
                 if self.config.get("debug_mode"):
                     logger.info(f"Level Changed (Consensus): {old_level} -> {level}")
