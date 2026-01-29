@@ -282,11 +282,11 @@ class UnifiedOverlay(DraggableWindow):
         painter.drawText(col_r_x, y_right, f"OCR: {int(self.ocr_score)}%")
         y_right += row_h
         
-        # Runes / Total
-        curr_runes = self.stats.get("current_runes", 0)
+        # Merchant Spending / Total
+        spent = self.stats.get("spent_at_merchants", 0)
         painter.setPen(color_text_white)
         painter.setFont(QFont("Helvetica", 10))
-        painter.drawText(col_r_x, y_right, f"Runes: {curr_runes:,}")
+        painter.drawText(col_r_x, y_right, f"🛒 {spent:,}")
         y_right += row_h
         painter.setPen(color_gold)
         painter.drawText(col_r_x, y_right, f"Total: {total_run//1000}k")
