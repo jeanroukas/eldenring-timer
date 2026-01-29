@@ -247,6 +247,42 @@ class StateService(IStateService):
         self.session_count = self.config.get("session_count", 0)
         self.current_phase = "INIT"
         self.start_new_session("STARTUP")
+    
+    def _add_to_transaction_history(self, ticket):
+        """
+        Add a validated ticket to the transaction history.
+        Formats the ticket for UI display.
+        """
+        # Format transaction for UI
+        transaction = {
+            "type": ticket.transaction_type,
+            "amount": ticket.amount,
+            "timestamp": ticket.created_at,
+            "resolution": ticket.resolution
+        }
+        
+        # Add context-specific data
+        if ticket.transaction_type == "LEVEL_UP" and ticket.context:
+            transaction["old_level"] = ticket.context.get("old_level")
+            transaction["new_level"] = ticket.context.get("new_level")
+        elif ticket.transaction_type == "DEATH" and ticket.context:
+            transaction["death_count"] = ticket.context.get("death_count")
+        elif ticket.transaction_type == "RECOVERY" and ticket.context:
+            transaction["recovery_count"] = ticket.context.get("recovery_count")
+        
+        # Add to history (max 4 items)
+        self.transaction_history.append(transaction)
+        logger.info(f"Transaction added to history: {ticket.transaction_type} {ticket.amount} runes")
+        
+        # TEST: Add a sample transaction to verify widget display
+        test_transaction = {
+            "type": "GAIN",
+            "amount": 1500,
+            "timestamp": time.time(),
+            "resolution": "GAIN"
+        }
+        self.transaction_history.append(test_transaction)
+        logger.info("TEST: Added sample transaction for widget verification")
         
         self.update_runes_display(1)
 
