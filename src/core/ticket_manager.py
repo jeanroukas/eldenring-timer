@@ -24,15 +24,25 @@ class TransactionTicket:
     """
     Represents a pending rune transaction awaiting validation.
     
+    Transaction Types:
+    - GAIN: Runes increased (enemy kills, items)
+    - SPENDING: Runes decreased (merchant purchases)
+    - LEVEL_UP: Runes decreased (level-up cost)
+    - DEATH: Runes lost (player death)
+    - RECOVERY: Runes recovered (after death)
+    
     State Machine:
-    PENDING → VALIDATED (LEVEL_UP or MERCHANT) → APPLIED
+    PENDING → VALIDATED (GAIN/SPENDING/LEVEL_UP/DEATH/RECOVERY) → APPLIED
            → REJECTED (GHOST or ERROR) → REVERTED
     """
     id: str
     timestamp: float
-    amount: int  # Amount of runes decreased
+    amount: int  # Amount of runes changed (positive or negative)
     old_runes: int
     new_runes: int
+    
+    # Transaction type
+    transaction_type: str = "SPENDING"  # GAIN, SPENDING, LEVEL_UP, DEATH, RECOVERY
     
     # State
     state: str = "PENDING"  # PENDING, VALIDATED, REJECTED, APPLIED, REVERTED
@@ -46,8 +56,15 @@ class TransactionTicket:
         "hud_hidden": False
     })
     
+    # Additional context (type-specific data)
+    context: Dict[str, any] = field(default_factory=dict)
+    # Examples:
+    # LEVEL_UP: {"old_level": 2, "new_level": 3}
+    # DEATH: {"death_count": 1}
+    # RECOVERY: {"recovery_count": 1}
+    
     # Resolution
-    resolution: Optional[str] = None  # LEVEL_UP, MERCHANT, GHOST, ERROR
+    resolution: Optional[str] = None  # GAIN, SPENDING, LEVEL_UP, DEATH, RECOVERY, GHOST, ERROR
     resolved_at: Optional[float] = None
     
     def __repr__(self):
@@ -71,8 +88,9 @@ class TicketManager:
         self.next_ticket_id = 1
         self.debug_mode = config.get("debug_mode", False)
     
-    def create_ticket(self, amount: int, old_runes: int, new_runes: int) -> TransactionTicket:
-        """Create a new transaction ticket for a rune decrease."""
+    def create_ticket(self, amount: int, old_runes: int, new_runes: int, 
+                     transaction_type: str = "SPENDING", context: Dict = None) -> TransactionTicket:
+        """Create a new transaction ticket."""
         ticket_id = f"T{self.next_ticket_id:04d}"
         self.next_ticket_id += 1
         
@@ -81,7 +99,9 @@ class TicketManager:
             timestamp=time.time(),
             amount=amount,
             old_runes=old_runes,
-            new_runes=new_runes
+            new_runes=new_runes,
+            transaction_type=transaction_type,
+            context=context or {}
         )
         
         # Immediate evidence: Multiple of 100?
@@ -91,7 +111,7 @@ class TicketManager:
         self.tickets[ticket_id] = ticket
         
         if self.debug_mode:
-            logger.info(f"TICKET_CREATED: {ticket_id} | Amount: -{amount} | Old: {old_runes} → New: {new_runes}")
+            logger.info(f"TICKET_CREATED: {ticket_id} | Type: {transaction_type} | Amount: {amount:+d} | Old: {old_runes} → New: {new_runes}")
         
         return ticket
     
@@ -114,13 +134,16 @@ class TicketManager:
     
     def resolve_ticket(self, ticket_id: str):
         """
-        Resolve a ticket based on collected evidence.
+        Resolve a ticket based on collected evidence and transaction type.
         
-        Priority:
-        1. Level-up (most reliable - level costs never multiples of 100)
-        2. Ghost (quick recovery within 2s)
-        3. Merchant (multiple of 100, no level change)
-        4. Timeout (2s) → Merchant if valid, else ERROR
+        Instant Resolution:
+        - GAIN: Always instant (no ambiguity)
+        - DEATH: Instant (3 conditions already checked)
+        - RECOVERY: Instant (exact match)
+        - LEVEL_UP: Instant when level changes (cost never multiple of 100)
+        
+        Delayed Resolution:
+        - SPENDING: 0.5-2s validation (wait for level change)
         """
         if ticket_id not in self.tickets:
             return
@@ -128,6 +151,31 @@ class TicketManager:
         ticket = self.tickets[ticket_id]
         if ticket.state != "PENDING":
             return  # Already resolved
+        
+        # Instant resolution for specific transaction types
+        if ticket.transaction_type == "GAIN":
+            ticket.resolution = "GAIN"
+            ticket.state = "VALIDATED"
+            ticket.resolved_at = time.time()
+            if self.debug_mode:
+                logger.info(f"TICKET_RESOLVED: {ticket_id} → GAIN (instant)")
+            return
+        
+        if ticket.transaction_type == "DEATH":
+            ticket.resolution = "DEATH"
+            ticket.state = "VALIDATED"
+            ticket.resolved_at = time.time()
+            if self.debug_mode:
+                logger.info(f"TICKET_RESOLVED: {ticket_id} → DEATH (instant)")
+            return
+        
+        if ticket.transaction_type == "RECOVERY":
+            ticket.resolution = "RECOVERY"
+            ticket.state = "VALIDATED"
+            ticket.resolved_at = time.time()
+            if self.debug_mode:
+                logger.info(f"TICKET_RESOLVED: {ticket_id} → RECOVERY (instant)")
+            return
         
         # Priority 1: Level-up (instant, no ambiguity)
         if ticket.evidence["level_up_detected"]:

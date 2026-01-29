@@ -1,0 +1,152 @@
+{
+  "ghost_cancellation_impl": {
+    "question": "Où et comment implémenter la ghost cancellation?",
+    "finding": "❌ AUCUNE logique de ghost cancellation trouvée dans le code",
+    "user_answer": "100% exact requis (pas 98%)",
+    "answer": "je crois que ce systeme va se melanger avec notre systeme de ticket qu'on va implementer. je crois que ca va etre un timer interne au systeme de digestion des tickets. comment fait les banques avec les opérations bancaires(verifier que les fonds sont la quand 2 retrait arrive en meme temps). il faut s'en inspirer.",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py::on_runes_detected()",
+    "priority": "🔴 HAUTE - Fonctionnalité documentée mais non implémentée"
+  },
+  "level_sync_duration": {
+    "question": "Comment implémenter le level-up sync guard de 5 secondes?",
+    "finding": "❌ Variable `_level_up_pending_sync` NON TROUVÉE dans le code",
+    "user_answer": "5 secondes suffisent (actuellement beaucoup plus rapide)",
+    "answer": "je crois que c'est pareil pour cette partie, on va l'inserer dans le systeme de digestion des ticket. on va faire un truc robuste. je crois que les 5s c'était une erreur de ma part. ce n'est pas une histoire de temps mais une histoire de validation des ticket par l'analyse.",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py::on_level_detected() ligne ~1400",
+    "priority": "🟡 MOYENNE - Amélioration de robustesse"
+  },
+  "digit_shift_consensus": {
+    "question": "Comment remplacer le timeout 15s par un système de consensus?",
+    "finding": "✅ Fonction `_is_digit_shift_drop()` existe mais durée incertitude = 15s",
+    "user_answer": "Réduire drastiquement - utiliser consensus OCR au lieu du temps",
+    "answer": "2 mais 4/5",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py::_is_digit_shift_drop() + on_runes_detected()",
+    "priority": "🟡 MOYENNE - Amélioration UX"
+  },
+  "spending_ticket_system": {
+    "question": "Comment implémenter le système de tickets pour les transactions?",
+    "finding": "⚠️ Utilise `recent_spending_history` avec timeout 5s, pas de 'pending_spending_event'",
+    "user_answer": "Système de tickets bancaires - ne pas se baser sur le temps mais sur la logique",
+    "answer": "il faut s'inspirer encore une fois des banques. trouver la methode la plus robuste. on va creer une machine qui est isolé du code qui recoit des infos et les digerent pour envoyer un resultat au code principal avec un niveau de confiance. tout ça logger pour pouvoir le debug facilement.",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py - Architecture globale",
+    "priority": "🔴 HAUTE - Demande explicite utilisateur 'TRÈS IMPORTANT'"
+  },
+  "shrink_marker_boss_time": {
+    "question": "Comment calculer les temps SHRINK 21:30 et 28:00 avec soustraction boss?",
+    "finding": "✅ SHRINK events créés à la fin des phases Shrinking",
+    "user_answer": "7:30 et 14:00 fixes, mais 21:30 et 28:00 doivent soustraire le temps boss 1",
+    "answer": "je n'en sait rien mais la version actuelle est la bonne.",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py::trigger_shrink_event() ligne ~2066",
+    "priority": "🟡 MOYENNE - Affichage graphique correct"
+  },
+  "rune_flicker_logging": {
+    "question": "Où ajouter le logging pour le filtre ±1 rune?",
+    "finding": "⚠️ Filtre ±1 rune non trouvé explicitement dans le code",
+    "user_answer": "Logger ce filtre car pas sûr de son utilité (gains toujours ≥100)",
+    "answer": "je pense que ce systeme est a ajouter au systeme de digestion des infos, mais encore une fois je ne suis pas sur de son utilité, normalement cela ne devrait pas arriver avec notre systeme de confirmation.",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py::on_runes_detected()",
+    "priority": "🟢 BASSE - Debug/Monitoring"
+  },
+  "level_consensus_increase": {
+    "question": "Modifier le seuil de consensus de 2 à 3?",
+    "finding": "✅ Consensus actuel = 2 lectures identiques",
+    "user_answer": "Passer à 3 lectures consécutives identiques",
+    "answer": "en vrai on devrait refacto les analyses OCR des nombres. ca devrait etre la meme, utiliser le systeme de burst comme pour les runes : Utiliser le système de burst existant (5 scans, majorité 4/5)",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py::on_level_detected()",
+    "priority": "🟢 BASSE - Amélioration mineure"
+  },
+  "death_black_screen_requirement": {
+    "question": "Rendre le black screen obligatoire pour valider une mort?",
+    "finding": "⚠️ Code actuel: black screen optionnel (stat-based suffit)",
+    "user_answer": "Rendre black screen REQUIS (Level -1 + Runes <50 + Black screen)",
+    "answer": "Modifier GameRules.is_death_confirmed() pour exiger black_screen",
+    "answer_index": 0,
+    "is_custom": false,
+    "code_location": "src/core/game_rules.py::is_death_confirmed()",
+    "priority": "🟡 MOYENNE - Précision détection mort"
+  },
+  "recovery_ui_display": {
+    "question": "L'UI affiche-t-elle les récupérations de runes?",
+    "finding": "❓ Utilisateur dit: 'la récupération ne s'affiche plus dans l'UI actuellement'",
+    "user_answer": "Vérifier si l'UI affiche bien les récupérations de bloodstain",
+    "answer": "il y a l'emplacement sur l'ui. mais quand le nombre exact de rune est recupéré la zone avec l'emoji recyclage reste a 0, alors que ca devrait etre +1.",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/ui/qt_overlay.py + src/services/state_service.py",
+    "priority": "🟡 MOYENNE - UX feedback"
+  },
+  "spending_multiple_100_exception": {
+    "question": "Le filtre 'multiple de 100' exclut-il déjà les level-ups?",
+    "finding": "✅ Level costs connus et intégrés (RuneData._LEVEL_COSTS)",
+    "user_answer": "Les level-ups ne sont PAS des multiples de 100",
+    "answer": "je ne sais pas mais notre nouveau systeme de digestion des ticket va resoudre cela",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py::on_level_detected() + on_runes_detected()",
+    "priority": "🟢 BASSE - Vérification"
+  },
+  "graph_repair_duration": {
+    "question": "Quelle durée de lookback pour graph repair?",
+    "finding": "✅ Code répare 300 secondes (5 minutes) d'historique",
+    "user_answer": "Pas sûr si 60s ou autre durée",
+    "answer": "1. mais il va falloir revoir cela plus tard car le systeme de ticket va solidifier normalement les données.",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py::on_level_detected() ligne ~1485",
+    "priority": "🟢 BASSE - Optimisation"
+  },
+  "ratchet_reset_behavior": {
+    "question": "Différence entre F4 (reset complet) et F5 (reset doux)?",
+    "finding": "❓ Comportement reset doux (F5) vs complet (F4) à clarifier",
+    "user_answer": "Les 2 affectent la courbe. Reset supprime la courbe et repart à zéro",
+    "answer": "F4 efface tout, rest session, en attente du \"jour I\", F5 a le meme comportement que lorsque  \"JOUR I\" est affiché, lancement du chrono et execution de ce que fait F4",
+    "answer_index": -1,
+    "is_custom": true,
+    "code_location": "src/services/state_service.py - hotkey handlers",
+    "priority": "🟢 BASSE - Documentation"
+  },
+  "boss_detection_methods": {
+    "question": "Les 3 méthodes de détection sont-elles implémentées?",
+    "finding": "✅ Utilisateur a clarifié les 3 méthodes",
+    "user_answer": "Boss 1: OCR 'JOUR II', Boss 2: écran noir, Boss 3: OCR 'resultat'",
+    "answer": "Tout est déjà implémenté correctement",
+    "answer_index": 1,
+    "is_custom": false,
+    "code_location": "src/services/state_service.py - trigger_day_2/3, check_victory",
+    "priority": "🟢 BASSE - Vérification"
+  },
+  "uncertain_graph_behavior": {
+    "question": "Le graphique est-il bien gelé pendant l'état uncertain?",
+    "finding": "✅ Utilisateur confirme: graphique gelé pendant uncertain",
+    "user_answer": "Gelé (utilise dernière valeur certaine)",
+    "answer": "Ajouter indicateur visuel pour uncertain state",
+    "answer_index": 1,
+    "is_custom": false,
+    "code_location": "src/services/state_service.py::update_timer_task()",
+    "priority": "🟢 BASSE - Vérification"
+  },
+  "audio_timing_confirmation": {
+    "question": "Les annonces audio utilisent-elles bien le temps restant?",
+    "finding": "✅ Utilisateur confirme: annonces = temps RESTANT",
+    "user_answer": "'2min' = il reste 2 minutes, '5s' joué à 4:25 (il reste 5s)",
+    "answer": "C'est déjà correct",
+    "answer_index": 1,
+    "is_custom": false,
+    "code_location": "src/services/state_service.py::update_timer_task() - audio section",
+    "priority": "🟢 BASSE - Vérification"
+  }
+}

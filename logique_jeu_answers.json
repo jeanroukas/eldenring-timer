@@ -1,0 +1,111 @@
+{
+  "rps_pause_timing": {
+    "question": "Le RPS est pausé pendant les boss, mais le TIMER continue. Est-ce correct?",
+    "answer": "le gaphique est le nombre de rune total, pas le nombre de runes par minute. le graphique est mis en pause, mais le time continue, c'est ça la logique.",
+    "answer_index": -1,
+    "is_custom": true
+  },
+  "ghost_cancellation_threshold": {
+    "question": "Le seuil de ghost cancellation est-il vraiment 98% ou 100%?",
+    "answer": "100% exact requis (10000 runes exactement)",
+    "answer_index": 1,
+    "is_custom": false,
+    "follow_up": "100% pas 98"
+  },
+  "level_up_sync_duration": {
+    "question": "La durée du 'level-up sync guard' est-elle vraiment 12 secondes?",
+    "answer": "franchement je pense qu'on pourrait reduire, 5s est suffisant.",
+    "answer_index": -1,
+    "is_custom": true,
+    "follow_up": "je pense qu'on n'est actuellement beaucoup plus rapide que 5 s pour detecter le nouveau level."
+  },
+  "digit_shift_detection": {
+    "question": "Comment fonctionne exactement la détection de 'digit shift' (7774 → 7174)?",
+    "answer": "je dirais 1 et 2 sont des eventualités d'erreur OCR.",
+    "answer_index": -1,
+    "is_custom": true,
+    "follow_up": "c'est un nombe random. je pense que les digit shift dure une fraction de seconde. donc on peut reduire enormement. a partir du moment ou une valeur est confirmé avec le meme resultat plusireur fois de suite avec l'ocr on ne devrait plus se poser la question du digit shift"
+  },
+  "death_black_screen_requirement": {
+    "question": "L'écran noir est-il REQUIS pour valider une mort ou juste optionnel?",
+    "answer": "Requis - Level -1 + Runes < 50 + Black screen tous nécessaires",
+    "answer_index": 1,
+    "is_custom": false
+  },
+  "recovery_exact_match": {
+    "question": "La récupération doit-elle être EXACTEMENT le montant perdu ou y a-t-il une tolérance?",
+    "answer": "Exact au rune près (10000 perdus = 10000 récupérés)",
+    "answer_index": 0,
+    "is_custom": false,
+    "follow_up": "une fois le chiffre 100% sur du nombre de rune en possession. le calcul est simple. d'ailleur je crois que la recuperation ne s'affiche plus dans l'UI actuellement."
+  },
+  "spending_validation_multiple": {
+    "question": "Pourquoi les dépenses doivent-elles être des multiples de 100?",
+    "answer": "Les prix marchands sont toujours des multiples de 100",
+    "answer_index": 0,
+    "is_custom": false,
+    "follow_up": "les lvl up ne sont pas des multiple de 100 et les nombres sont deja connu et integré au projet. je ne comprend pas que tu ais un doute la desssus"
+  },
+  "rune_flicker_threshold": {
+    "question": "Le filtre de ±1 rune s'applique-t-il aussi aux gains ou seulement aux drops?",
+    "answer": "je n'avais pas conscience de se filtre il faudrait le LOG car je ne suis pas sur que ce soit utile. en attendant le laisser sur gains et drops.",
+    "answer_index": -1,
+    "is_custom": true,
+    "follow_up": "quand on gagne des runes (en tuant des ennemies) on ne gagne jamais <100 runes."
+  },
+  "consensus_reset_conditions": {
+    "question": "Quand le compteur de consensus (level_consensus_count) est-il réinitialisé?",
+    "answer": "on pourrait passer a 3 consecutive identical reading. et je dirais Reset à chaque lecture différente de pending_level",
+    "answer_index": -1,
+    "is_custom": true
+  },
+  "phase_transition_audio_timing": {
+    "question": "Les annonces audio (2min, 1min, 30s, 5s) sont-elles jouées AVANT la fin de phase?",
+    "answer": "Temps RESTANT (ex: '2min' = il reste 2 minutes)",
+    "answer_index": 0,
+    "is_custom": false,
+    "follow_up": "4:25"
+  },
+  "graph_repair_lookback": {
+    "question": "Pourquoi la réparation du graphique regarde-t-elle 60 secondes en arrière?",
+    "answer": "C'est arbitraire, pourrait être changé",
+    "answer_index": 1,
+    "is_custom": false,
+    "follow_up": "je ne suis pas sur"
+  },
+  "ratchet_exceptions": {
+    "question": "Quelles sont TOUTES les exceptions à la règle de monotonie?",
+    "answer": "Mort, spending, reset, ET corrections OCR",
+    "answer_index": 2,
+    "is_custom": false,
+    "follow_up": "les 2 affecte la courbe. le reset supprime la courbe et on repart a zero"
+  },
+  "boss_phase_duration": {
+    "question": "Les phases Boss ont-elles une durée maximale ou sont-elles infinies?",
+    "answer": "Infini - Le boss dure jusqu'à la mort ou victoire",
+    "answer_index": 0,
+    "is_custom": false,
+    "follow_up": "boss1 1 OCR \"JOUR II\" ; boss 2 ecran noir; boss 3 ocr \"resultat\""
+  },
+  "uncertain_state_duration": {
+    "question": "Combien de temps l'état 'uncertain' dure-t-il pour les runes?",
+    "answer": "Jusqu'à ce qu'une lecture certaine arrive",
+    "answer_index": 2,
+    "is_custom": false,
+    "follow_up": "gelé"
+  },
+  "pending_spending_grace_period": {
+    "question": "La grace period de 10s pour pending_spending_event commence quand?",
+    "answer": "Commence à la détection de la baisse de runes",
+    "answer_index": 0,
+    "is_custom": false,
+    "follow_up": "il faut faire les calculs. si il y a le coup d'un level up plus une prise de niveau + une depense en centaine de runes, on peut identifier chaque element. je ne crois pas qu'on a besoin des 10s. il faudrait implementer un systeme de ticket (comme les banques font) pour valider chaque opération en attente. et mettre en attente quand on ne trouve pas de solution. exemple : arrive une baisse de rune puis une deuxieme puis un niveau+1 puis un gain de rune. il y a un code qui recupere tout ces ticket et les digere. je pense qu'il faut s'inspirer de l'industrie. CE POINT EST TRES IMPORTANT. il faut trouver la maniere la plus robuste et elegante. cela ne depent pas du temps (ne plus se baser sur 10s) mais de la confiance des données et d'une logique d'analyse, implacable."
+  },
+  "shrink_marker_trigger": {
+    "question": "Les marqueurs SHRINK sont-ils déclenchés au DÉBUT ou à la FIN de Shrinking?",
+    "answer": "Fin de phase Shrinking (quand timer atteint 0:00)",
+    "answer_index": 0,
+    "is_custom": false,
+    "follow_up": "je ne comprend pas la question mais une chose est sur, 7:30 et 14:00 sont fixe. comme on pause le timer les shrinks 21:30 et 28:00 sont fixe aussi mais sur le graphique on doit les placer en soustraction du temps posser au boss 1. je ne suis pas sur a 100% mais on a passer beaucoup dde temps a regler les ligne vertical sur le graph et la solution actuelle est la bonne. recherche la logique de ces 2 temps dans le code et améliore ma réponse."
+  }
+}

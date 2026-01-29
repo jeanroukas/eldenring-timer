@@ -201,7 +201,8 @@ class StateService(IStateService):
         self.permanent_loss = 0 
         
         # Transaction Ticket System
-        self.ticket_manager = TicketManager(config)
+        self.ticket_manager = TicketManager(self.config)
+        self.transaction_history = deque(maxlen=4)  # Last 4 validated transactions
         self._ignore_next_rune_drop = False
         self._ignore_next_rune_gain = False
         self._ignore_next_rune_gain_grace_period = None
@@ -679,6 +680,9 @@ class StateService(IStateService):
                 
                 # Mark ticket as applied
                 self.ticket_manager.mark_applied(ticket.id)
+                
+                # Add to transaction history
+                self._add_to_transaction_history(ticket)
             
             # Cleanup old tickets (every 5 minutes)
             if int(time.time()) % 300 == 0:
