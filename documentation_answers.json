@@ -1,0 +1,90 @@
+{
+  "game_name": {
+    "question": "Le jeu s'appelle-t-il 'Elden Ring Nightreign' ou juste 'Nightreign'?",
+    "answer": "Nightreign (Jeu standalone)",
+    "answer_index": 1
+  },
+  "phase_count": {
+    "question": "Combien y a-t-il de 'Days' (Jours) dans une partie complète?",
+    "answer": "Autre (préciser)",
+    "answer_index": 2,
+    "follow_up": "il y en a 3. mais le systeme de jours 1 et 2 sont semblable. le 3eme est une préparation puis un boss fight"
+  },
+  "day_vs_night": {
+    "question": "Quelle est la terminologie correcte dans le jeu?",
+    "answer": "Le jeu affiche 'JOUR I', 'JOUR II', 'JOUR III' (Days en français)",
+    "answer_index": 0
+  },
+  "boss_count": {
+    "question": "Combien de boss y a-t-il dans une partie complète?",
+    "answer": "3 Boss (Boss 1, Boss 2, Boss 3 Final)",
+    "answer_index": 1,
+    "follow_up": "non"
+  },
+  "phase_durations": {
+    "question": "Les durées des phases sont-elles identiques pour Day 1 et Day 2?",
+    "answer": "Oui, exactement les mêmes (14 minutes par Day)",
+    "answer_index": 0
+  },
+  "day3_mechanics": {
+    "question": "Comment fonctionne Day 3 (si il existe)?",
+    "answer": "Day 3 n'a pas de timer, c'est juste la préparation + boss final",
+    "answer_index": 0,
+    "follow_up": "ecran noir"
+  },
+  "black_screen_detection": {
+    "question": "Quelles transitions utilisent la détection d'écran noir?",
+    "answer": "Seulement Boss 2 → Day 3",
+    "answer_index": 0
+  },
+  "ocr_triggers": {
+    "question": "Quels textes OCR déclenchent les transitions de Day?",
+    "answer": "JOUR I pour Day 1, JOUR II pour Day 2, pas de JOUR III",
+    "answer_index": 0,
+    "follow_up": "en francais, mais ça pourrait m'arriver de debugger sur des videos en anglais ou il y a \"DAY I\" et \"DAY II\""
+  },
+  "level_target": {
+    "question": "Quel est l'objectif de niveau optimal?",
+    "answer": "Level 15 est le maximum absolu du jeu",
+    "answer_index": 1,
+    "follow_up": "je ne sais pas mais il y a toute les infos dans le code."
+  },
+  "rune_total": {
+    "question": "Quelle est la quantité totale de runes requise?",
+    "answer": "512,936 runes au total (incluant les boss)",
+    "answer_index": 0
+  },
+  "boss_rewards": {
+    "question": "Combien de runes donnent les boss?",
+    "answer": "Les montants sont variables/approximatifs",
+    "answer_index": 2
+  },
+  "snowball_factors": {
+    "question": "Les facteurs de snowball (1.35 et 1.15) sont-ils corrects?",
+    "answer": "Oui, 1.35 pour Day 1, 1.15 pour Day 2",
+    "answer_index": 0,
+    "follow_up": "il sont deja configurable dans les parametres de l'application"
+  },
+  "menu_detection": {
+    "question": "Comment détecte-t-on le retour au menu principal?",
+    "answer": "Détection du Main Menu (écran titre)",
+    "answer_index": 0,
+    "follow_up": "pour l'instant oui mais je ne sais pas si l'implementation fonctionne correctement"
+  },
+  "victory_detection": {
+    "question": "Comment détecte-t-on la victoire?",
+    "answer": "Autre méthode",
+    "answer_index": 3
+  },
+  "shrink_markers": {
+    "question": "Combien de marqueurs 'Shrink' y a-t-il sur le graphique?",
+    "answer": "4 marqueurs (2 par Day, à la fin de chaque phase Shrinking)",
+    "answer_index": 0
+  },
+  "rps_calculation": {
+    "question": "Le calcul RPS (Runes Per Second) est-il pausé pendant les boss?",
+    "answer": "Oui, RPS et graphique sont pausés pendant TOUS les boss",
+    "answer_index": 0,
+    "follow_up": "le timer continue"
+  }
+}

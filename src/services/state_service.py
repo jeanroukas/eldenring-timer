@@ -519,12 +519,48 @@ class StateService(IStateService):
             time.sleep(0.2)
 
     def check_system_resources(self):
+        """
+        Monitors system resources and logs heartbeat to detect crashes.
+        Runs every 10 seconds via _run_loops.
+        """
         if psutil is None: return
         try:
+            # Get system stats
             cpu = psutil.cpu_percent(interval=None)
             ram = psutil.virtual_memory().percent
-            self.log_session_event("SYSTEM_RESOURCE_STATS", {"cpu": cpu, "ram": ram})
-        except: pass
+            
+            # Get process memory usage
+            process = psutil.Process()
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            
+            # Calculate uptime
+            uptime = 0
+            if self.session.start_time:
+                uptime = int(time.time() - self.session.start_time)
+            
+            # Log system stats with memory
+            self.log_session_event("SYSTEM_RESOURCE_STATS", {
+                "cpu": cpu, 
+                "ram": ram,
+                "process_memory_mb": round(memory_mb, 1)
+            })
+            
+            # Heartbeat logging every 60 seconds (6 cycles of 10s)
+            if not hasattr(self, '_heartbeat_counter'):
+                self._heartbeat_counter = 0
+            
+            self._heartbeat_counter += 1
+            if self._heartbeat_counter >= 6:  # 60 seconds
+                logger.info(
+                    f"HEARTBEAT: Session {self.session_count}, "
+                    f"Phase: {self.current_phase}, "
+                    f"Uptime: {uptime}s, "
+                    f"Memory: {memory_mb:.1f}MB"
+                )
+                self._heartbeat_counter = 0
+                
+        except Exception as e:
+            logger.error(f"check_system_resources error: {e}", exc_info=True)
 
     def check_process_task(self):
         try:

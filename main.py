@@ -4,6 +4,32 @@ import ctypes
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 from src.service_container import ServiceContainer
+
+# Global Exception Handler - Captures uncaught exceptions before crash
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    """
+    Captures and logs uncaught exceptions before program termination.
+    This helps diagnose crashes that would otherwise leave no trace.
+    """
+    try:
+        from src.logger import logger
+        logger.critical(
+            "UNCAUGHT EXCEPTION - Program will terminate",
+            exc_info=(exc_type, exc_value, exc_traceback)
+        )
+        # Force flush to ensure the exception is written to disk
+        for handler in logger.handlers:
+            handler.flush()
+    except Exception as e:
+        # Fallback if logging fails
+        print(f"CRITICAL: Failed to log exception: {e}")
+        print(f"Original exception: {exc_type.__name__}: {exc_value}")
+    
+    # Call the default exception handler
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+# Install the global exception handler
+sys.excepthook = global_exception_handler
 from src.services.base_service import IConfigService, IVisionService, IOverlayService, IStateService, IDatabaseService, ITrayService, IAudioService
 from src.services.config_service import ConfigService
 from src.services.vision_service import VisionService
