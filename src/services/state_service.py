@@ -637,7 +637,8 @@ class StateService(IStateService):
                     ticket = self.ticket_manager.create_ticket(
                         amount=spent_val,
                         old_runes=old_runes_val,
-                        new_runes=self.session.current_runes
+                        new_runes=self.session.current_runes,
+                        transaction_type="SPENDING"
                     )
                     
                     # Ticket will be resolved automatically by TicketManager
@@ -1870,6 +1871,17 @@ class StateService(IStateService):
                              pass
 
                     if is_recovery:
+                        # Create RECOVERY ticket
+                        ticket = self.ticket_manager.create_ticket(
+                            amount=self.lost_runes_pending,
+                            old_runes=runes - self.lost_runes_pending,
+                            new_runes=runes,
+                            transaction_type="RECOVERY",
+                            context={"recovery_count": self.session.recovery_count + 1}
+                        )
+                        # Instant validation
+                        self.ticket_manager.resolve_ticket(ticket.id)
+                        
                         self.session.recovery_count += 1 
                         self.log_session_event("RUNE_RECOVERY", {"recovered": self.lost_runes_pending})
                         self.session.graph_events.append({"t": len(self.session.run_accumulated_history), "type": "RECOVERY"})
