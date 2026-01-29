@@ -62,8 +62,8 @@ pip install -r requirements.txt
 
 | Touche | Action |
 |--------|--------|
-| **F4** | Reset Complet (efface toutes les données de run) |
-| **F5** | Démarrer Day 1 / Reset Doux |
+| **F4** | Reset Complet (efface tout, retour en attente de "JOUR I") |
+| **F5** | Démarrer Day 1 (lance le chrono comme si "JOUR I" était affiché) |
 | **F6** | Forcer Day 2 |
 | **F7** | Forcer Day 3 |
 | **F8** | Skip Boss / Correction |
@@ -226,9 +226,11 @@ nightreign-timer/
 
 #### Consensus & Validation
 
-- **Level Consensus** : 2 lectures identiques consécutives requises
-- **Rune Burst** : 5 scans rapides, majorité 3/5 requise
+- **Level Consensus** : 2 lectures identiques consécutives requises *(sera migré vers burst 4/5)*
+- **Rune Burst** : 5 scans rapides, majorité 3/5 requise *(sera augmenté à 4/5)*
 - **Filtre Flicker** : Transitions ±1 rune lissées/ignorées
+
+> **Note**: Une refonte majeure du système de validation est prévue avec une architecture de "tickets" inspirée des systèmes bancaires, permettant une digestion robuste des événements OCR sans dépendance temporelle.
 
 #### Vision Conditionnelle
 
@@ -300,20 +302,25 @@ Basé sur le delta par rapport à la courbe idéale :
 
 ## 🎯 Logique de Mort & Récupération
 
-### Détection de Mort (Stat-Based)
+### Détection de Mort (Stat-Based + Black Screen)
 
 **Conditions** (toutes requises) :
 
 1. ✅ **Level Drop** : Niveau diminue EXACTEMENT de 1 (ex: 9 → 8)
    - Drops > 1 rejetés comme glitches OCR
 2. ✅ **Runes → Zéro** : Runes tombent à < 50
-3. ⚠️ **Écran Noir** : Optionnel (confiance, pas bloquant)
+3. ✅ **Écran Noir** : REQUIS (détection black screen dans les 5 dernières secondes)
+
+> **Changement Important**: L'écran noir est maintenant **obligatoire** pour valider une mort, évitant les faux positifs dus aux glitches OCR.
 
 ### Logique de Récupération "All or Nothing"
 
-- **Récupération** : Gain de runes = montant bloodstain EXACT
+- **Récupération** : Gain de runes = montant bloodstain EXACT (au rune près)
 - **Double Mort** : Runes pending → Perte permanente
 - **Reset Guard** : Raccourcis manuels forcent les changements d'état
+- **UI Feedback** : Indicateur recyclage (+1) lors de la récupération réussie
+
+> **Note**: Un bug connu fait que l'indicateur recyclage reste parfois à 0 au lieu de +1 lors d'une récupération exacte.
 
 ### Distinction Loading vs Death
 
