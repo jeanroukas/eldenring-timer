@@ -633,6 +633,19 @@ class StateService(IStateService):
                         self.spent_at_merchants += spent_val
                         self.log_session_event("SPENDING", {"spent": spent_val, "total_spent": self.spent_at_merchants, "current": self.session.current_runes})
                         self.recent_spending_history.append((time.time(), spent_val))
+                        
+                        # GRAPH DECREASE: Subtract spending from accumulated history
+                        # This makes the graph go DOWN when you spend runes at merchants
+                        for i in range(len(self.session.run_accumulated_history)):
+                            self.session.run_accumulated_history[i] -= spent_val
+                            if self.session.run_accumulated_history[i] < 0:
+                                self.session.run_accumulated_history[i] = 0
+                        
+                        # Add spending event marker
+                        self.session.graph_events.append({"t": len(self.session.run_accumulated_history), "type": "SPENDING", "amount": spent_val})
+                        
+                        if self.config.get("debug_mode"):
+                            logger.info(f"SPENDING CONFIRMED: -{spent_val} runes. Graph decreased. Total spent: {self.spent_at_merchants}")
                     else:
                         # REJECT LOGIC
                         if self.config.get("debug_mode"):
