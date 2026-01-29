@@ -48,16 +48,42 @@ class GameRules:
     # --- DEATH LOGIC ---
 
     @staticmethod
-    def is_death_confirmed(old_level: int, new_level: int, new_runes: int) -> bool:
+    def is_death_confirmed(old_level: int, new_level: int, new_runes: int, 
+                          last_black_screen_time: float = 0.0) -> bool:
         """
         Determines if a state change represents a VALID Death.
-        Rule: 
+        Rule (ALL 3 conditions required):
         1. Level drops EXACTLY by 1.
         2. Runes drop to near zero (< 50).
-        (Black Screen is no longer mandatory per user clarification)
+        3. Black screen detected within last 5 seconds (REQUIRED per user questionnaire).
+        
+        Args:
+            old_level: Previous level
+            new_level: New level
+            new_runes: New rune count
+            last_black_screen_time: Timestamp of last black screen detection
+            
+        Returns:
+            True if all 3 death conditions are met
         """
-        if old_level - new_level != 1: return False
-        if new_runes >= 50: return False
+        import time
+        
+        # Condition 1: Level drop exactly 1
+        if old_level - new_level != 1: 
+            return False
+        
+        # Condition 2: Runes near zero
+        if new_runes >= 50: 
+            return False
+        
+        # Condition 3: Black screen within last 5 seconds (REQUIRED)
+        if last_black_screen_time == 0.0:
+            return False  # No black screen detected yet
+        
+        time_since_black = time.time() - last_black_screen_time
+        if time_since_black > 5.0:
+            return False  # Black screen too old
+        
         return True
 
     # --- OCR MAPPING ---

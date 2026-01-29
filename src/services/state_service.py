@@ -1,32 +1,3 @@
-"""
-State Service - Game State Machine and Logic
-=============================================
-
-This module contains the StateService class, which is the "brain" of the application.
-It manages:
-- Game state machine (phases, transitions, timers)
-- OCR result processing and consensus
-- Death detection and recovery logic
-- Rune tracking and graph calculation
-- RPS (Runes Per Second) calculation
-- Spending validation and merchant detection
-- Session logging and persistence
-
-The StateService follows an event-driven architecture, subscribing to events from
-VisionService and publishing state changes to OverlayService.
-
-Key Algorithms:
-- Ratchet (Monotonicity): Green curve never decreases except for validated deaths/spending
-- Fuzzy OCR Matching: Accepts typos like "JOOR" → "JOUR" with 70% similarity
-- Consensus: Requires 2 identical readings for level, 3/5 for runes
-- Ghost Cancellation: Reverts spending if runes return to previous value within 10s
-
-Architecture:
-    VisionEngine → VisionService → StateService → OverlayService
-                                        ↓
-                                   DatabaseService
-"""
-
 import time
 import datetime
 import winsound
@@ -52,39 +23,6 @@ from src.core.events import bus, LevelDetectedEvent, RunesDetectedEvent, MenuDet
 from src.logger import logger
 
 class StateService(IStateService):
-    """
-    Core game state machine and logic controller.
-    
-    This is the central "brain" of the application, responsible for:
-    - Managing game phases (Day 1, Day 2, Day 3, Boss fights)
-    - Processing OCR results with consensus and validation
-    - Detecting deaths, recoveries, and spending
-    - Calculating RPS (Runes Per Second) and graph data
-    - Enforcing game rules (monotonicity, level caps, etc.)
-    - Logging sessions and events
-    
-    State Machine:
-        The service tracks 12 phases:
-        - Day 1: Storm (4:30) → Shrinking (3:00) → Storm 2 (3:30) → Shrinking 2 (3:00) → Boss 1
-        - Day 2: Storm (4:30) → Shrinking (3:00) → Storm 2 (3:30) → Shrinking 2 (3:00) → Boss 2
-        - Day 3: Preparation → Final Boss
-    
-    Transitions:
-        - Timer-based: Automatic when phase duration expires
-        - OCR-based: "JOUR I", "JOUR II" detection
-        - Black screen: Boss 2 → Day 3 transition
-    
-    Key Invariants:
-        - phase_index ∈ [-1, 11] where -1 = waiting
-        - current_runes >= 0 always
-        - run_accumulated_history is MONOTONE (never decreases except death/spending)
-        - Level can only change by ±1 (larger changes rejected as OCR errors)
-    
-    Threading:
-        - Main thread: Qt event loop, UI updates
-        - Background thread: _run_loops() for timers and monitoring
-        - All state mutations are thread-safe via Qt signals
-    """
     def __init__(self, config: IConfigService, vision: IVisionService, overlay: IOverlayService, db: IDatabaseService, audio: IAudioService, tray: ITrayService):
         self.config = config
         self.vision = vision
@@ -235,6 +173,12 @@ class StateService(IStateService):
         self.session.current_run_level = 1
         self.pending_level = None
         self.level_consensus_count = 0
+        self.level_burst_buffer = []  # New: For burst validation (4/5 majority)
+        
+        # LED States for OCR Validation Feedback
+        # States: 'idle' (gray), 'burst' (orange), 'validated' (green), 'rejected' (red)
+        self.level_led_state = 'idle'
+        self.runes_led_state = 'idle'
         
         # Rune History & RPS (40s Window)
         self.session.current_runes = 0
@@ -645,47 +589,6 @@ class StateService(IStateService):
             logger.error(f"StateService: check_process_task error: {e}")
 
     def update_timer_task(self):
-        """
-        Main game loop - updates timer, RPS, graph, and handles phase transitions.
-        
-        This is the heart of the application, called every 200ms from _run_loops().
-        It handles:
-        
-        1. **Pending Event Processing**:
-           - Spending events (10s grace period for ghost cancellation)
-           - Level-up sync guards (12s window)
-           - Rune gain ignore flags (5s grace period)
-        
-        2. **Timer Management**:
-           - Calculates remaining time for current phase
-           - Auto-advances to next phase when timer expires
-           - Triggers SHRINK markers at phase boundaries
-        
-        3. **RPS & Graph Updates** (every 1 second):
-           - Updates rune gains history (40s sliding window)
-           - Calculates total wealth (level cost + current + pending)
-           - Applies Ratchet (monotonicity) via GameRules
-           - Logs graph data to JSON
-           - Saves graph log every 5s
-        
-        4. **Audio Announcements**:
-           - Storm phase warnings (2min, 1min, 30s, 5s)
-           - Phase start announcements
-        
-        Key Algorithms:
-        - **Ghost Cancellation**: If runes return to 98% of old value, spending was OCR glitch
-        - **Level-Up Sync**: Masks level cost for 12s after level up (OCR lag)
-        - **Ratchet**: Green curve never decreases except validated death/spending
-        - **Graph Repair**: Retroactively fixes last 60s after ghost cancellation
-        
-        Pauses:
-        - Skips if timer_frozen or is_hibernating
-        - RPS paused during boss fights (rps_paused flag)
-        
-        Threading:
-        - Runs in background thread (_run_loops)
-        - UI updates scheduled via overlay.schedule()
-        """
         if self.session.timer_frozen or self.is_hibernating:
             return
 
@@ -1397,51 +1300,6 @@ class StateService(IStateService):
         logger.info("Run reset complete")
 
     def on_level_detected(self, level: int, confidence: float = 100.0):
-        """
-        Processes level detection from OCR with consensus and validation.
-        
-        This method is called by VisionService whenever a level is detected.
-        It implements strict validation to prevent OCR errors from corrupting state.
-        
-        Consensus Algorithm:
-        - Requires 2 consecutive identical readings before accepting change
-        - Rejects changes > ±1 level (OCR glitches)
-        - Tracks pending_level and level_consensus_count
-        
-        Level Up Detection:
-        - When level increases by 1:
-          * Calculates level cost from RuneData
-          * Checks recent_spending_history (60s) for ghost spending
-          * Reverts any spending that matches level cost
-          * Repairs graph history (last 60s)
-          * Sets _level_up_pending_sync for 12s guard window
-        
-        Death Detection (Stat-Based):
-        - Triggers when BOTH conditions met:
-          1. Level drops by EXACTLY 1 (e.g., 9 → 8)
-          2. Runes drop to < 50
-        - Optional: Black screen confirmation (not required)
-        - Rejects drops > 1 as OCR errors
-        
-        Early Game Detection:
-        - Level 1 + "JOUR I" not yet seen → waiting_for_day1 = True
-        - Publishes EarlyGameDetectedEvent
-        
-        UI Updates:
-        - Blue circles around level region (1 circle = 1 level possible)
-        - Updates overlay with new level and stats
-        
-        Args:
-            level (int): Detected level (1-15)
-            confidence (float): OCR confidence percentage (0-100)
-        
-        Side Effects:
-            - Updates session.current_run_level
-            - May trigger death event
-            - May revert spending (ghost cancellation)
-            - May repair graph history
-            - Schedules UI updates
-        """
         # Pause logic if tuner is active
         if self.logic_paused: return
         
@@ -1581,7 +1439,10 @@ class StateService(IStateService):
                 
                 # Pass timestamp of last confirmed black screen
                 last_black_screen = getattr(self, 'last_black_screen_end', 0)
-                is_stat_death = GameRules.is_death_confirmed(old_level, level, curr_runes)
+                is_stat_death = GameRules.is_death_confirmed(
+                    old_level, level, curr_runes, 
+                    last_black_screen_time=self.last_black_screen_end
+                )
                 
                 if is_stat_death:
                      logger.warning(f"DEATH CONFIRMED (Stat Based): Level {old_level}->{level} (-1) & Runes {curr_runes} (<50).")
@@ -1716,61 +1577,6 @@ class StateService(IStateService):
                 self.level_consensus_count = 0 
 
     def on_runes_detected(self, runes: int, confidence: float = 100.0):
-        """
-        Processes rune detection from OCR with validation and spending detection.
-        
-        This method handles all rune changes, distinguishing between:
-        - Normal gains (farming, boss kills)
-        - Spending (merchants, level-ups)
-        - Deaths (runes → 0)
-        - OCR glitches (digit shifts, flickers)
-        
-        Validation:
-        - Rejects negative values
-        - Filters ±1 rune flickers (OCR noise)
-        - Detects digit shift drops (e.g., 7774 → 7174)
-        - Holds suspicious drops as "uncertain" for 15s
-        
-        Spending Detection:
-        - Triggered when runes decrease while level stable
-        - Creates pending_spending_event with 10s grace period
-        - Grace period allows:
-          * Ghost cancellation if runes return (OCR glitch)
-          * Level-up detection to revert spending
-        - Validates amount is multiple of 100
-        - Rejects non-standard amounts as OCR errors
-        
-        Death Detection:
-        - Runes drop to < 50 (combined with level drop in on_level_detected)
-        - Sets lost_runes_pending (bloodstain amount)
-        - Waits for recovery or double death
-        
-        Recovery Detection:
-        - Rune gain matches lost_runes_pending EXACTLY
-        - "All or Nothing" - partial recoveries rejected
-        - Clears lost_runes_pending on success
-        
-        RPS Calculation:
-        - Adds gains to pending_rps_gain
-        - Flushed to history every 1s in update_timer_task
-        - Paused during boss fights
-        
-        Uncertainty Handling:
-        - Low confidence (< threshold) → runes_uncertain = True
-        - Digit shift drops → held for 15s
-        - Uncertain state prevents graph updates
-        
-        Args:
-            runes (int): Detected rune count
-            confidence (float): OCR confidence percentage (0-100)
-        
-        Side Effects:
-            - Updates session.current_runes
-            - May create pending_spending_event
-            - May trigger death/recovery
-            - Updates RPS pending gain
-            - Schedules UI updates
-        """
         if self.logic_paused: return
         
         # Update internal state (Always active for UI)
@@ -1975,6 +1781,7 @@ class StateService(IStateService):
                             logger.info(f"DEBUG_RUNES [ACTION]: RECOVERY DETECTED (+{self.lost_runes_pending})")
                         self.lost_runes_pending = 0 
                         gain = 0 
+                        # Note: UI will update on next update_timer_task cycle (200ms) 
                     
                     if gain > 0: self.pending_rps_gain += gain
 
