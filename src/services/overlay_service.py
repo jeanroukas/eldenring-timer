@@ -5,6 +5,7 @@ from src.services.base_service import IOverlayService, IConfigService
 from src.ui.qt_overlay import UnifiedOverlay
 from src.ui.level_indicator import LevelIndicatorOverlay
 from src.ui.missing_runes_overlay import MissingRunesOverlay
+from src.ui.transaction_history_widget import TransactionHistoryWidget
 from src.service_container import ServiceContainer
 
 class OverlayMeta(type(QObject), ABCMeta):
@@ -19,6 +20,7 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
         self.unified_overlay: Optional[UnifiedOverlay] = None
         self.level_indicator: Optional[LevelIndicatorOverlay] = None
         self.missing_runes_overlay: Optional[MissingRunesOverlay] = None
+        self.transaction_widget: Optional[TransactionHistoryWidget] = None
         self.is_recording = False
         
         # Connect signal to slot (will execute in Main Thread)
@@ -115,6 +117,21 @@ class OverlayService(QObject, IOverlayService, metaclass=OverlayMeta):
     def update_run_stats(self, stats: dict) -> None:
         # Clone stats if needed? Dicts are passed by reference, but usually stats is a new dict from StateService
         self.schedule(0, lambda: self.unified_overlay.set_stats(stats) if self.unified_overlay else None)
+        
+        # Update transaction history widget
+        if "transaction_history" in stats:
+            def _u_transaction():
+                # Create widget if not exists and has transactions
+                if self.transaction_widget is None and len(stats["transaction_history"]) > 0:
+                    config = ServiceContainer().resolve(IConfigService)
+                    self.transaction_widget = TransactionHistoryWidget(None, config)
+                    self.transaction_widget.show()
+                
+                # Update widget with new transactions
+                if self.transaction_widget:
+                    self.transaction_widget.update_transactions(stats["transaction_history"])
+            
+            self.schedule(0, _u_transaction)
         
         # Update Circle Indicator if applicable
         if "level" in stats and "potential_level" in stats:
