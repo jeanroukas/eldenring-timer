@@ -1,3 +1,23 @@
+"""
+Nightreign Timer - Application Entry Point
+===========================================
+
+This module serves as the main entry point for the Nightreign Timer application.
+It handles:
+- Global exception handling for crash prevention
+- DPI awareness configuration for Windows
+- Single instance management (mutex)
+- Service initialization and dependency injection
+- Qt application lifecycle management
+
+The application uses PyQt6 for the UI and follows a Service-Oriented Architecture (SOA)
+with dependency injection via ServiceContainer.
+
+Usage:
+    python main.py              # Start application normally
+    python main.py --config     # Open configuration window only
+"""
+
 import sys
 import argparse
 import ctypes
@@ -44,7 +64,18 @@ from src.ui.state_inspector import StateInspectorWindow
 from src.ui.debug_overlay import DebugOverlayManager
 from src.ui.ocr_tuner import OCRTunerWindow
 
-# Set DPI Awareness
+# ============================================================================
+# DPI Awareness Configuration for Windows
+# ============================================================================
+# This ensures the application renders correctly on high-DPI displays.
+# We try multiple methods in order of preference:
+# 1. Per-Monitor V2 (Context -4) - Windows 10 1703+ - Best quality
+# 2. Per-Monitor (2) - Windows 8.1+ - Good quality
+# 3. System DPI Aware - Windows Vista+ - Basic support
+#
+# Without DPI awareness, the overlay may appear blurry or incorrectly sized.
+# ============================================================================
+
 try:
     # Try Per-Monitor V2 (Context -4)
     ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
@@ -54,6 +85,7 @@ except Exception:
         ctypes.windll.shcore.SetProcessDpiAwareness(2) 
     except Exception:
         try:
+            # Fallback to System DPI Aware
             ctypes.windll.user32.SetProcessDPIAware()
         except Exception:
             print("Could not set DPI awareness")
@@ -62,7 +94,45 @@ import psutil
 import os
 
 class Launcher:
+    """
+    Main application launcher for Nightreign Timer.
+    
+    Responsibilities:
+    - Enforce single instance via Windows mutex
+    - Initialize Qt application and event loop
+    - Set up all services via dependency injection
+    - Handle application lifecycle (startup, shutdown, restart)
+    - Provide UI for configuration and region selection
+    
+    The Launcher uses a mutex to prevent multiple instances from running
+    simultaneously. If another instance is detected, the user is prompted
+    to kill it and restart.
+    
+    Architecture:
+        ServiceContainer manages all services with dependency injection:
+        - ConfigService: Manages config.json persistence
+        - VisionService: OCR and screen capture
+        - OverlayService: PyQt6 UI overlay
+        - StateService: Game state machine and logic
+        - DatabaseService: SQLite persistence
+        - AudioService: TTS announcements
+        - TrayService: System tray icon
+    
+    Attributes:
+        mutex_name (str): Global mutex identifier
+        kernel32: Windows kernel32.dll for mutex operations
+        mutex: Handle to the mutex
+        app (QApplication): Qt application instance
+        container (ServiceContainer): DI container for services
+    """
+    
     def __init__(self):
+        # ====================================================================
+        # Single Instance Check (Mutex)
+        # ====================================================================
+        # We use a Windows global mutex to ensure only one instance runs.
+        # If another instance exists, prompt user to kill it.
+        # ====================================================================
         # Singleton Check
         self.mutex_name = "Global\\EldenRingNightreignTimerMutex_V2"
         self.kernel32 = ctypes.windll.kernel32
@@ -96,6 +166,12 @@ class Launcher:
         self.setup_services()
 
     def ask_kill_existing(self):
+        """
+        Prompts user to kill existing instance via MessageBox.
+        
+        Returns:
+            bool: True if user clicked Yes and instances were killed, False otherwise
+        """
         MB_YESNO = 0x04
         MB_ICONQUESTION = 0x20
         IDYES = 6
@@ -111,6 +187,15 @@ class Launcher:
         return False
                 
     def kill_existing_instances(self):
+        """
+        Kills all running instances of Nightreign Timer.
+        
+        Uses psutil to find processes matching:
+        - Python processes running main.py
+        - Compiled executables named 'eldenringtimer'
+        
+        Skips the current process (self).
+        """
         current_pid = os.getpid()
         killed = False
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -141,6 +226,21 @@ class Launcher:
              print("Could not find process to kill, but mutex was held.")
         
     def setup_services(self):
+        """
+        Initializes all services and registers them in the DI container.
+        
+        Service initialization order is important:
+        1. ConfigService - Required by all other services
+        2. VisionService - Requires ConfigService
+        3. OverlayService - Independent
+        4. DatabaseService - Independent
+        5. AudioService - Requires ConfigService
+        6. TrayService - Requires Launcher reference
+        7. StateService - Requires all above services
+        
+        All services are registered with their interface types for
+        dependency injection.
+        """
         # 1. Config
         self.config_service = ConfigService()
         self.container.register(IConfigService, self.config_service)
@@ -172,6 +272,15 @@ class Launcher:
         self.container.register(IStateService, self.state_service)
 
     def run(self):
+        """
+        Main application entry point.
+        
+        Parses command-line arguments and either:
+        - Opens configuration window (--config flag)
+        - Starts full application
+        
+        Then enters Qt event loop (blocking until app quits).
+        """
         parser = argparse.ArgumentParser()
         parser.add_argument("--config", action="store_true", help="Open configuration window")
         args = parser.parse_args()
@@ -273,6 +382,18 @@ class Launcher:
 
 
     def start_application(self):
+        """
+        Starts the full application with all services.
+        
+        Initialization sequence:
+        1. Initialize all services via container
+        2. Create Debug Overlay Manager
+        3. Set up vision debug callback
+        4. Create and connect OCR Tuner window
+        5. Register F9 hotkey for settings
+        
+        The application runs in the background with system tray icon.
+        """
         print("Starting Services...")
         self.container.initialize_all()
         
