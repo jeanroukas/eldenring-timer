@@ -1360,6 +1360,11 @@ class StateService(IStateService):
                     
                 # Trigger Burst
                 self.level_led_state = 'burst'  # LED: Orange (scanning)
+                
+                # Update Debug Overlay LED immediately (so user sees orange)
+                if self.config.get("debug_mode"):
+                    self._update_debug_led("Level", "...", 50, 'burst')
+                
                 burst = self.vision.request_level_burst()
                 if burst:
                     from collections import Counter
@@ -1371,15 +1376,21 @@ class StateService(IStateService):
                         if self.config.get("debug_mode"):
                             logger.info(f"Level Burst Failed: Inconsistent results {burst} (need 4/5, got {freq}/5). Waiting...")
                         self.level_led_state = 'rejected'  # LED: Red (failed validation)
+                        
+                        # Update LED and keep red for 500ms
+                        if self.config.get("debug_mode"):
+                            self._update_debug_led("Level", str(most_common), freq * 20, 'rejected')
+                            self.schedule(500, lambda: setattr(self, 'level_led_state', 'idle'))
                         return
                     
                     # Normalize to burst consensus
                     level = most_common
                     self.level_led_state = 'validated'  # LED: Green (consensus reached)
                     
-                    # Update Debug Overlay LED
+                    # Update Debug Overlay LED and keep green for 300ms
                     if self.config.get("debug_mode"):
                         self._update_debug_led("Level", str(level), freq * 20, 'validated')
+                        self.schedule(300, lambda: setattr(self, 'level_led_state', 'idle'))
 
             # Only update if changed (or first time after init)
             if level != self.session.current_run_level:
