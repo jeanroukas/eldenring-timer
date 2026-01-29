@@ -1613,6 +1613,7 @@ class StateService(IStateService):
                 
                 if self.config.get("debug_mode"):
                     logger.info(f"Level Changed (Consensus): {old_level} -> {level}")
+                    logger.info(f"DEBUG_LEVEL: Level-up detected. Old: {old_level}, New: {level}, Burst validated")
                 
                 self.session.current_run_level = level
                 self.last_stat_change_time = time.time()
