@@ -1655,8 +1655,19 @@ class StateService(IStateService):
                      return # Junk reading
 
             # --- BURST VALIDATION (Mandatory for Level/Runes) ---
+            self.runes_led_state = 'burst'  # LED: Orange (scanning)
+            
+            # Update Debug Overlay LED immediately
+            if self.config.get("debug_mode"):
+                self._update_debug_led("Runes", "...", 50, 'burst')
+            
             burst_results = self.vision.request_runes_burst()
-            if not burst_results: return
+            if not burst_results:
+                self.runes_led_state = 'rejected'  # LED: Red (no burst data)
+                if self.config.get("debug_mode"):
+                    self._update_debug_led("Runes", "FAIL", 0, 'rejected')
+                    self.schedule(500, lambda: setattr(self, 'runes_led_state', 'idle'))
+                return
             
             from collections import Counter
             counts = Counter(burst_results)
@@ -1664,10 +1675,20 @@ class StateService(IStateService):
             
             # Require Consensus (3/5)
             if frequency < 3:
-                 return
+                self.runes_led_state = 'rejected'  # LED: Red (failed consensus)
+                if self.config.get("debug_mode"):
+                    self._update_debug_led("Runes", str(most_common), frequency * 20, 'rejected')
+                    self.schedule(500, lambda: setattr(self, 'runes_led_state', 'idle'))
+                return
             
             # Normalize to the consensus value
             runes = most_common
+            self.runes_led_state = 'validated'  # LED: Green (consensus reached)
+            
+            # Update Debug Overlay LED and keep green for 300ms
+            if self.config.get("debug_mode"):
+                self._update_debug_led("Runes", str(runes), frequency * 20, 'validated')
+                self.schedule(300, lambda: setattr(self, 'runes_led_state', 'idle'))
 
             # Re-check change gate after normalization
             if runes == self.session.current_runes: pass 
@@ -1691,7 +1712,8 @@ class StateService(IStateService):
                 # If same as candidate, check for suspicious persistence
                 if self.spike_persistence > 0:
                      self.spike_persistence += 1
-                     if self.spike_persistence < 3: # Require 3 hits for suspicious
+                     # Reduced from 3 to 2 hits (per user: "digit shift dure une fraction de seconde")
+                     if self.spike_persistence < 2:
                          return
 
                 # If we are here, BURST passed AND 2/3-STEP verification passed.
