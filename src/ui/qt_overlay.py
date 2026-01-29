@@ -471,7 +471,7 @@ class UnifiedOverlay(DraggableWindow):
         candidates = []
         for l in range(1, 150):
             req = self.get_total_runes_for_level(l)
-            if req > y_range_max: break # Optimization
+            if req is None or req > y_range_max: break # Optimization + None safety
             if req > 0:
                 candidates.append((l, req))
                 
