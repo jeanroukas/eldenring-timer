@@ -902,6 +902,17 @@ class StateService(IStateService):
 
     def schedule(self, delay_ms: int, callback):
         self.overlay.schedule(delay_ms, callback)
+    
+    def _update_debug_led(self, zone_name: str, text: str, confidence: float, burst_state: str):
+        """Update Debug Overlay LED with burst state."""
+        if hasattr(self, 'debug_overlay') and self.debug_overlay:
+            # Update via signal (thread-safe)
+            self.debug_overlay.update_signal.emit(zone_name, text, confidence)
+            # Update burst state directly on widget (if exists)
+            if zone_name in self.debug_overlay.widgets:
+                widget = self.debug_overlay.widgets[zone_name]
+                widget.burst_state = burst_state
+                widget.update()
 
     # --- Process Monitor ---
 
@@ -1348,19 +1359,27 @@ class StateService(IStateService):
                     return
                     
                 # Trigger Burst
+                self.level_led_state = 'burst'  # LED: Orange (scanning)
                 burst = self.vision.request_level_burst()
                 if burst:
                     from collections import Counter
                     counts = Counter(burst)
                     most_common, freq = counts.most_common(1)[0]
                     
-                    if freq < 3:
+                    # Changed from 3/5 to 4/5 majority (per user questionnaire)
+                    if freq < 4:
                         if self.config.get("debug_mode"):
-                            logger.info(f"Level Burst Failed: Inconsistent results {burst}. Waiting...")
+                            logger.info(f"Level Burst Failed: Inconsistent results {burst} (need 4/5, got {freq}/5). Waiting...")
+                        self.level_led_state = 'rejected'  # LED: Red (failed validation)
                         return
                     
                     # Normalize to burst consensus
                     level = most_common
+                    self.level_led_state = 'validated'  # LED: Green (consensus reached)
+                    
+                    # Update Debug Overlay LED
+                    if self.config.get("debug_mode"):
+                        self._update_debug_led("Level", str(level), freq * 20, 'validated')
 
             # Only update if changed (or first time after init)
             if level != self.session.current_run_level:

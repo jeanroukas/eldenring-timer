@@ -25,6 +25,7 @@ class OCRDebugWidget(QMainWindow):
         self.confidence = 0.0
         self.is_active = False # Visual flash
         self.last_update_time = 0
+        self.burst_state = 'idle'  # New: 'idle', 'burst', 'validated', 'rejected'
         
         self.old_pos = None
         
@@ -48,9 +49,10 @@ class OCRDebugWidget(QMainWindow):
         # Emit signal to save position
         self.position_changed.emit(self.name, self.x(), self.y())
 
-    def update_state(self, text: str, conf: float):
+    def update_state(self, text: str, conf: float, burst_state: str = 'idle'):
         self.text = text
         self.confidence = conf
+        self.burst_state = burst_state
         self.is_active = True
         self.update()
         
@@ -73,34 +75,57 @@ class OCRDebugWidget(QMainWindow):
         painter.setPen(QPen(QColor(100, 100, 100), 1))
         painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 5, 5)
         
-        # LED Indicator
-        led_x = 10
+        # LED 1: Confidence Indicator (Left)
+        led1_x = 10
         led_y = h // 2
-        led_size = 12
+        led_size = 10
         
-        led_color = QColor(50, 50, 50) # Off (Grey)
+        led1_color = QColor(50, 50, 50) # Off (Grey)
         
         if self.is_active:
             if self.confidence > 80:
-                led_color = QColor(0, 255, 0) # Green (Good)
+                led1_color = QColor(0, 255, 0) # Green (Good)
             elif self.confidence > 40:
-                led_color = QColor(255, 165, 0) # Orange (Uncertain)
+                led1_color = QColor(255, 165, 0) # Orange (Uncertain)
             else:
-                led_color = QColor(255, 0, 0) # Red (Bad)
+                led1_color = QColor(255, 0, 0) # Red (Bad)
                 
-        painter.setBrush(led_color)
+        painter.setBrush(led1_color)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(QPoint(led_x, led_y), led_size // 2, led_size // 2)
+        painter.drawEllipse(QPoint(led1_x, led_y), led_size // 2, led_size // 2)
         
-        # Glow Effect (Optional)
+        # Glow Effect for LED 1
         if self.is_active:
-            glow = QColor(led_color)
-            glow.setAlpha(100)
+            glow = QColor(led1_color)
+            glow.setAlpha(80)
             painter.setBrush(glow)
-            painter.drawEllipse(QPoint(led_x, led_y), led_size, led_size)
+            painter.drawEllipse(QPoint(led1_x, led_y), led_size, led_size)
+        
+        # LED 2: Burst State Indicator (Right of LED 1)
+        led2_x = 24
+        led2_color = QColor(80, 80, 80)  # Default: Dark Gray (idle)
+        
+        if self.burst_state == 'burst':
+            led2_color = QColor(255, 165, 0)  # Orange (scanning)
+        elif self.burst_state == 'validated':
+            led2_color = QColor(0, 255, 0)  # Green (success)
+        elif self.burst_state == 'rejected':
+            led2_color = QColor(255, 0, 0)  # Red (failed)
+        # else: idle = dark gray
+        
+        painter.setBrush(led2_color)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(QPoint(led2_x, led_y), led_size // 2, led_size // 2)
+        
+        # Glow Effect for LED 2 (only if not idle)
+        if self.burst_state != 'idle':
+            glow2 = QColor(led2_color)
+            glow2.setAlpha(80)
+            painter.setBrush(glow2)
+            painter.drawEllipse(QPoint(led2_x, led_y), led_size, led_size)
 
         # Label Text (Name + Raw)
-        text_x = 30
+        text_x = 40  # Moved right to accommodate 2 LEDs
         
         # Zone Name (Tiny, Top)
         painter.setFont(QFont("Arial", 7))
@@ -164,7 +189,7 @@ class DebugOverlayManager(QObject):
     def _perform_update(self, name: str, text: str, conf: float):
         # This runs on Main Thread
         if name in self.widgets:
-            self.widgets[name].update_state(text, conf)
+            self.widgets[name].update_state(text, conf, burst_state='idle')
 
     def set_visible(self, visible: bool):
         for w in self.widgets.values():
