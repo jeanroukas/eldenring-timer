@@ -81,10 +81,30 @@ pip install -r requirements.txt
 
 ### Nouvelles Fonctionnalités (Jan 2026)
 
+#### OCR & Debug
+
 - **OCR Tuner** : Ajustement en temps réel des paramètres OCR (F9)
 - **Logic Pause** : Le tuning pause l'état du jeu pour éviter les faux triggers
-- **Debug Overlay** : Indicateurs visuels LED (Rouge/Orange/Vert) pour Level, Runes, Zone
-- **4 Marqueurs Graphiques** : Lignes verticales marquant la fin de chaque phase Shrinking
+- **Debug Overlay** : Indicateurs visuels avec rectangles pour Level, Runes, Zone, Menu, Reward
+
+#### Dual LED System ⭐ NOUVEAU
+
+Chaque zone OCR affiche **2 LEDs** :
+
+- **LED 1 (Confidence)** : 🟢 Vert (>80%) / 🟠 Orange (40-80%) / 🔴 Rouge (<40%)
+- **LED 2 (Burst State)** : 🟠 Scanning / 🟢 Validé (300ms) / 🔴 Rejeté (500ms) / ⚪ Idle
+
+#### Merchant Spending ⭐ NOUVEAU
+
+- **UI Display** : 🛒 Montant dépensé chez les marchands (remplace runes actuelles)
+- **Graph Decrease** : Le graphe descend visuellement lors des achats
+- **Event Markers** : 🛒 icône sur la timeline du graphe
+
+#### Graph Improvements
+
+- **4 Marqueurs Shrinking** : Lignes verticales marquant la fin de chaque phase
+- **Event Icons** : 💀 Death / ♻️ Recovery / ⚔️ Boss / 🛒 Spending
+- **Visual Feedback** : Graph monte (gains) et descend (dépenses)
 
 ---
 
